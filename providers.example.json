@@ -1,0 +1,36 @@
+{
+  "zai": {
+    "label": "Z.ai (glm-5.2)",
+    "env": {
+      "ANTHROPIC_AUTH_TOKEN": "<z.ai API key>",
+      "ANTHROPIC_BASE_URL": "https://api.z.ai/api/anthropic",
+      "ANTHROPIC_DEFAULT_OPUS_MODEL": "glm-5.2[1m]",
+      "ANTHROPIC_DEFAULT_SONNET_MODEL": "glm-5.2[1m]",
+      "ANTHROPIC_DEFAULT_HAIKU_MODEL": "glm-4.7",
+      "ANTHROPIC_DEFAULT_FABLE_MODEL": "glm-5.2[1m]",
+      "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "1000000",
+      "API_TIMEOUT_MS": "3000000",
+      "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"
+    }
+  },
+  "kimi": {
+    "label": "Kimi Code (k3[1m])",
+    "env": {
+      "ANTHROPIC_API_KEY": "<kimi code console key>",
+      "ANTHROPIC_BASE_URL": "https://api.kimi.com/coding/",
+      "ANTHROPIC_MODEL": "k3[1m]",
+      "ANTHROPIC_DEFAULT_FABLE_MODEL": "k3[1m]",
+      "ANTHROPIC_DEFAULT_OPUS_MODEL": "k3[1m]",
+      "ANTHROPIC_DEFAULT_SONNET_MODEL": "k3[1m]",
+      "ANTHROPIC_DEFAULT_HAIKU_MODEL": "k3[1m]",
+      "CLAUDE_CODE_SUBAGENT_MODEL": "k3[1m]",
+      "CLAUDE_CODE_EFFORT_LEVEL": "high",
+      "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "1048576",
+      "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "1048576"
+    },
+    "claudeJson": {
+      "penguinModeOrgEnabled": true,
+      "hasCompletedOnboarding": true
+    }
+  }
+}
