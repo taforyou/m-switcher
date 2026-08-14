@@ -8,7 +8,7 @@ switches Node versions:
 ```
 $ m
   o claude (anthropic default)
-    Z.ai (glm-5.2)
+    Z.ai (glm-5.3)
     Kimi Code (k3[1m])
   up/down to select, return to switch, q to quit
 ```
