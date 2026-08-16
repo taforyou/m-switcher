@@ -9,7 +9,7 @@ Tests live under `tests/`. `tests/test_m.zsh` is the integration suite, `tests/b
 ## Build, Test, and Development Commands
 
 - `zsh -n m` — syntax-check the main zsh script.
-- `sh -n install.sh` — syntax-check the POSIX installer.
+- `sh -n install.sh tests/bin/curl tests/bin/jq` — syntax-check the POSIX installer and test shims.
 - `jq empty providers.example.json tests/fixtures/*.json` — validate JSON files.
 - `tests/test_m.zsh` — run isolated integration tests with temporary settings and mocked HTTP.
 - `git diff --check` — detect whitespace errors before committing.

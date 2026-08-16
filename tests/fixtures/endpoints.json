@@ -4,14 +4,14 @@
     "name": "Z.ai: GLM 5.2",
     "endpoints": [
       {
-        "provider_name": "RegularCloud",
-        "tag": "regularcloud/fp8",
-        "status": 0,
-        "context_length": 524288,
+        "provider_name": "Together",
+        "tag": "together",
+        "status": -2,
+        "context_length": 1048576,
         "quantization": "fp8",
         "pricing": {
-          "prompt": "0.0000014",
-          "completion": "0.0000044",
+          "prompt": "0.0000001",
+          "completion": "0.0000004",
           "discount": 0
         },
         "supported_parameters": ["tools", "tool_choice"]
@@ -41,6 +41,58 @@
           "discount": 0.9
         },
         "supported_parameters": ["temperature"]
+      },
+      {
+        "provider_name": "Venice",
+        "tag": "venice/fp8",
+        "status": 0,
+        "context_length": 1000000,
+        "quantization": "fp8",
+        "pricing": {
+          "prompt": "0.0000012",
+          "completion": "0.0000040",
+          "discount": 0
+        },
+        "supported_parameters": ["tools", "tool_choice"]
+      },
+      {
+        "provider_name": "RegularCloud",
+        "tag": "regularcloud/fp8",
+        "status": 0,
+        "context_length": 524288,
+        "quantization": "fp8",
+        "pricing": {
+          "prompt": "0.0000014",
+          "completion": "0.0000044",
+          "discount": 0
+        },
+        "supported_parameters": ["tools", "tool_choice"]
+      },
+      {
+        "provider_name": "Fireworks",
+        "tag": "fireworks",
+        "status": 0,
+        "context_length": 262144,
+        "quantization": "fp8",
+        "pricing": {
+          "prompt": "0.0000014",
+          "completion": "0.0000044",
+          "discount": 0
+        },
+        "supported_parameters": ["tools", "tool_choice"]
+      },
+      {
+        "provider_name": "Fireworks (fast)",
+        "tag": "fireworks/fast",
+        "status": 0,
+        "context_length": 262144,
+        "quantization": "fp8",
+        "pricing": {
+          "prompt": "0.0000021",
+          "completion": "0.0000066",
+          "discount": 0
+        },
+        "supported_parameters": ["tools", "tool_choice"]
       }
     ]
   }

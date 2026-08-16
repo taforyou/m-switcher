@@ -1,0 +1,6 @@
+#!/bin/sh
+# Test-only jq wrapper: records argv (which must never contain an API key)
+# when M_TEST_ARGV_LOG is set, then runs the real jq found later on PATH.
+[ -n "${M_TEST_ARGV_LOG:-}" ] && printf '%s\n' "$*" >> "$M_TEST_ARGV_LOG"
+PATH="${PATH#*:}"
+exec jq "$@"

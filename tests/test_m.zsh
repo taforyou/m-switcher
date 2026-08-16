@@ -8,6 +8,10 @@ PROVIDERS="$TEST_TMP/providers.json"
 CLAUDE_JSON="$TEST_TMP/claude.json"
 OUTPUT="$TEST_TMP/output"
 M_TEST_LOG="$TEST_TMP/request.json"
+ARGV_LOG="$TEST_TMP/argv.log"
+
+# The temp dir holds fake keys only; keep it for inspection with M_TEST_KEEP=1.
+trap '[[ -n "${M_TEST_KEEP:-}" ]] || rm -rf "$TEST_TMP"' EXIT
 
 export PATH="$ROOT/tests/bin:$PATH"
 export M_TEST_FIXTURES="$ROOT/tests/fixtures"
@@ -25,45 +29,154 @@ assert_jq() {
   jq -e "$1" "$2" >/dev/null || fail "$3"
 }
 
+# Every m run traces the argv of the jq/curl it spawns into $ARGV_LOG; the
+# suite's own jq calls are not traced, so a key found there came from m.
+m() {
+  M_TEST_ARGV_LOG="$ARGV_LOG" "$ROOT/m" "$@"
+}
+
+# Runs m expecting success; stdout goes to $OUTPUT, stderr to $OUTPUT.err.
+run() {
+  m "$@" > "$OUTPUT" 2> "$OUTPUT.err" \
+    || fail "m $* failed (exit $?): $(cat "$OUTPUT.err" "$OUTPUT")"
+}
+
+# Runs m expecting a specific non-zero exit code; stdout+stderr go to $OUTPUT.
+expect_rc() {
+  local want="$1" rc=0
+  shift
+  m "$@" > "$OUTPUT" 2>&1 || rc=$?
+  (( rc == want )) || fail "m $* exited $rc, expected $want: $(cat "$OUTPUT")"
+}
+
+mode_of() {
+  local listing
+  listing="$(ls -ld "$1")"
+  echo "${listing[1,10]}"
+}
+
+assert_private() {
+  [[ "$(mode_of "$1")" == "-rw-------" ]] || fail "$2 ($1 is $(mode_of "$1"))"
+}
+
+snapshot() {
+  jq -S . "$1"
+}
+
+# --- fixtures ---------------------------------------------------------------
+# settings.json and providers.json start out 644, as Claude Code and a
+# hand-made copy leave them; stale 644 backups mimic earlier m versions.
 printf '%s\n' '{"env":{"KEEP_ME":"yes"},"permissions":{"allow":["Read"]},"modelOverrides":{"claude-opus-4-6":"user/opus-route"}}' > "$SETTINGS"
 cp "$ROOT/providers.example.json" "$PROVIDERS"
+chmod 644 "$SETTINGS" "$PROVIDERS"
+printf '{}\n' > "$SETTINGS.bak"
+printf '{}\n' > "$PROVIDERS.bak"
+chmod 644 "$SETTINGS.bak" "$PROVIDERS.bak"
+
+# --- guards before any key is configured ------------------------------------
+# A placeholder key is refused with exit 3 and nothing is written.
+before="$(snapshot "$SETTINGS")"
+expect_rc 3 zai
+grep -q 'refusing: API key' "$OUTPUT" || fail "placeholder guard did not explain itself"
+[[ "$(snapshot "$SETTINGS")" == "$before" ]] || fail "placeholder guard modified settings"
+[[ "$(cat "$SETTINGS.bak")" == "{}" ]] || fail "placeholder guard wrote a backup"
+
+# Providers without a catalog say so before asking for a key.
+expect_rc 2 models kimi
+grep -q 'no model catalog' "$OUTPUT" || fail "m models kimi did not report the missing catalog"
+if grep -q 'refusing' "$OUTPUT"; then fail "m models kimi demanded a key before checking for a catalog"; fi
+expect_rc 2 models claude
+grep -q 'no model catalog' "$OUTPUT" || fail "m models claude did not report the missing catalog"
+
+# CLI usage errors exit 2.
+expect_rc 2 bogus
+expect_rc 2 zai extra
+expect_rc 2 status extra
+
+# --- m key ------------------------------------------------------------------
+# A rejected key is not saved.
+printf '%s\n' 'sk-bad' | expect_rc 3 key openrouter
+grep -q 'HTTP 401' "$OUTPUT" || fail "rejected key did not report the API error"
+assert_jq '.openrouter.env.ANTHROPIC_AUTH_TOKEN | startswith("<")' "$PROVIDERS" \
+  "rejected key was saved"
 
 # The key command reads from stdin without echoing it, validates it, and saves
-# only after validation succeeds.
-printf '%s\n' 'sk-or-test' | "$ROOT/m" key openrouter > "$OUTPUT"
+# only after validation succeeds. providers.json and its backup end up private
+# even though both started out 644.
+printf '%s\n' 'sk-or-test' | run key openrouter
+grep -q '^saved and validated API key for OpenRouter' "$OUTPUT" || fail "key save message wrong: $(cat "$OUTPUT")"
 assert_jq '.openrouter.env.ANTHROPIC_AUTH_TOKEN == "sk-or-test"' "$PROVIDERS" \
   "OpenRouter key was not saved"
+assert_private "$PROVIDERS" "providers.json is not private after m key"
+assert_private "$PROVIDERS.bak" "providers.json.bak is not private after m key"
 
+# Providers without a validationUrl are saved but not reported as validated.
+printf '%s\n' 'zai-key' | run key zai
+grep -q '^saved API key for Z.ai (glm-5.3) (not validated' "$OUTPUT" || fail "unvalidated save was misreported: $(cat "$OUTPUT")"
+printf '%s\n' 'kimi-key' | run key kimi
+grep -q '(not validated' "$OUTPUT" || fail "unvalidated Kimi save was misreported"
+assert_jq '.zai.env.ANTHROPIC_AUTH_TOKEN == "zai-key" and .kimi.env.ANTHROPIC_API_KEY == "kimi-key"' "$PROVIDERS" \
+  "plain provider keys were not saved"
+
+# --- catalog listings -------------------------------------------------------
 # Prefix search should put Q-prefixed models in the result and exclude models
 # that do not match the prefix/substring.
-"$ROOT/m" models openrouter Q > "$OUTPUT"
+run models openrouter Q
 grep -q '^qwen/qwen3-coder' "$OUTPUT" || fail "Q search did not find Qwen"
 if grep -q 'z-ai/glm-5.2' "$OUTPUT"; then fail "Q search included an unrelated model"; fi
-"$ROOT/m" models openrouter free > "$OUTPUT"
+run models openrouter free
 grep -q '^openrouter/free' "$OUTPUT" || fail "automatic free router was not listed"
 
-# Endpoints are tool-capable only, cheapest first, with the live discount
-# rounded in the same style as OpenRouter's UI.
-"$ROOT/m" endpoints openrouter z-ai/glm-5.2 > "$OUTPUT"
+# Batch-API variants are hidden from the catalog and cannot be pinned.
+run models openrouter batch
+if grep -q ':batch' "$OUTPUT"; then fail ":batch variant was listed"; fi
+expect_rc 2 openrouter anthropic/claude-test:batch
+grep -q "unknown model 'anthropic/claude-test:batch'" "$OUTPUT" || fail ":batch variant was accepted"
+
+# Endpoints are healthy and tool-capable only, cheapest first, with the live
+# discount rounded in the same style as OpenRouter's UI and the context shown.
+run endpoints openrouter z-ai/glm-5.2
 first_endpoint="$(sed -n '1p' "$OUTPUT")"
 [[ "$first_endpoint" == streamlake/fp8* ]] || fail "cheapest endpoint was not first"
 [[ "$first_endpoint" == *'(77% off)'* ]] || fail "discount was not displayed"
+[[ "$first_endpoint" == *'1M context'* ]] || fail "endpoint context was not displayed"
 if grep -q '^notools' "$OUTPUT"; then fail "endpoint without tools was listed"; fi
+if grep -q '^together' "$OUTPUT"; then fail "unhealthy endpoint was listed"; fi
+grep -q '^fireworks/fast' "$OUTPUT" || fail "sibling endpoint missing from the list"
 
-# A non-interactive model switch chooses the current cheapest endpoint, creates
-# an exact-routing preset, and assigns it to every Claude Code model role.
-"$ROOT/m" openrouter z-ai/glm-5.2 > "$OUTPUT"
+# m endpoints only ever puts catalog model IDs into the request URL.
+expect_rc 2 endpoints openrouter '../../key'
+grep -q "unknown model" "$OUTPUT" || fail "m endpoints accepted a non-catalog model"
+if grep -q 'key/endpoints' "$M_TEST_LOG.requests"; then fail "m endpoints requested a URL built from an unvalidated argument"; fi
+
+# Catalog failures leave settings untouched.
+before="$(snapshot "$SETTINGS")"
+rc=0
+M_TEST_FAIL_MODELS=1 m openrouter z-ai/glm-5.2 > "$OUTPUT" 2>&1 || rc=$?
+(( rc == 1 )) || fail "catalog failure exited $rc, expected 1"
+grep -q 'server exploded (HTTP 500)' "$OUTPUT" || fail "catalog failure was not reported"
+[[ "$(snapshot "$SETTINGS")" == "$before" ]] || fail "catalog failure modified settings"
+
+# --- non-interactive OpenRouter switch --------------------------------------
+# A non-interactive model switch chooses the current cheapest healthy endpoint,
+# creates an exact-routing preset, and assigns it to every Claude Code model
+# role. Both settings files become private even though they started out 644.
+run openrouter z-ai/glm-5.2
+grep -q '^switched to OpenRouter' "$OUTPUT" || fail "switch confirmation missing"
 assert_jq '.env.ANTHROPIC_BASE_URL == "https://openrouter.ai/api"' "$SETTINGS" \
   "OpenRouter base URL was not installed"
 assert_jq '.env.ANTHROPIC_API_KEY == ""' "$SETTINGS" \
   "Anthropic API key was not explicitly blanked"
-assert_jq '.env.ANTHROPIC_MODEL
-           | startswith("@preset/m-switcher-") and endswith("[1m]")' "$SETTINGS" \
-  "routing preset was not selected"
-assert_jq '.env.ANTHROPIC_MODEL == .env.ANTHROPIC_DEFAULT_OPUS_MODEL
-           and .env.ANTHROPIC_MODEL == .env.ANTHROPIC_DEFAULT_SONNET_MODEL
-           and .env.ANTHROPIC_MODEL == .env.ANTHROPIC_DEFAULT_HAIKU_MODEL
-           and .env.ANTHROPIC_MODEL == .env.CLAUDE_CODE_SUBAGENT_MODEL' "$SETTINGS" \
+assert_jq '.env.ANTHROPIC_MODEL == "@preset/m-switcher-z-ai-glm-5-2-streamlake-fp8-527906733[1m]"' "$SETTINGS" \
+  "routing preset was not selected (or its deterministic slug changed)"
+for role in $(jq -r '.openrouter.modelCatalog.modelEnv[]' "$PROVIDERS"); do
+  jq -e --arg k "$role" '.env[$k] == .env.ANTHROPIC_MODEL' "$SETTINGS" >/dev/null \
+    || fail "model role $role does not use the selected route"
+done
+[[ "$(jq -r '.openrouter.modelCatalog.modelEnv | length' "$PROVIDERS")" == 6 ]] \
+  || fail "modelEnv no longer lists all six Claude Code model roles"
+assert_jq '.env.ANTHROPIC_DEFAULT_FABLE_MODEL == .env.ANTHROPIC_MODEL
+           and .env.CLAUDE_CODE_SUBAGENT_MODEL == .env.ANTHROPIC_MODEL' "$SETTINGS" \
   "not every Claude Code model role uses the selected route"
 assert_jq '.env.M_SWITCHER_MODEL == "z-ai/glm-5.2"
            and .env.M_SWITCHER_ENDPOINT == "streamlake/fp8"
@@ -77,17 +190,32 @@ assert_jq '.env.M_SWITCHER_MODEL == "z-ai/glm-5.2"
 assert_jq '.env.KEEP_ME == "yes" and .permissions.allow == ["Read"]
            and .modelOverrides["claude-opus-4-6"] == "user/opus-route"' "$SETTINGS" \
   "unrelated settings were changed"
-assert_jq '.provider.only == ["streamlake/fp8"]
-           and .provider.allow_fallbacks == false' "$M_TEST_LOG" \
+assert_jq '.model == "z-ai/glm-5.2"
+           and .provider.only == ["streamlake/fp8"]
+           and .provider.allow_fallbacks == false
+           and (.provider | has("ignore") | not)' "$M_TEST_LOG" \
   "preset does not pin the exact endpoint"
+assert_private "$SETTINGS" "settings.json is not private after a switch"
+assert_private "$SETTINGS.bak" "settings.json.bak is not private after a switch"
+assert_jq '.env == {"KEEP_ME":"yes"}' "$SETTINGS.bak" "settings.json.bak does not hold the previous settings"
 
-"$ROOT/m" status > "$OUTPUT"
+run status
+grep -q '^active: OpenRouter' "$OUTPUT" || fail "status did not name the active provider"
 grep -q 'model: z-ai/glm-5.2' "$OUTPUT" || fail "status omitted selected model"
 grep -q 'endpoint: StreamLake' "$OUTPUT" || fail "status omitted selected endpoint"
 grep -q 'context: 1024000 tokens' "$OUTPUT" || fail "status omitted endpoint context"
 
-# An explicit endpoint tag overrides the cheapest default.
-"$ROOT/m" openrouter z-ai/glm-5.2 regularcloud/fp8 > "$OUTPUT"
+# Selecting the same route again reuses the existing preset instead of
+# creating a new version.
+rm -f "$M_TEST_LOG"
+run openrouter z-ai/glm-5.2
+[[ ! -f "$M_TEST_LOG" ]] || fail "identical preset was re-created"
+assert_jq '.env.ANTHROPIC_MODEL == "@preset/m-switcher-z-ai-glm-5-2-streamlake-fp8-527906733[1m]"' "$SETTINGS" \
+  "route changed on an identical switch"
+
+# An explicit endpoint tag overrides the cheapest default; a 512K window gets
+# neither the [1m] suffix nor a recognition mapping.
+run openrouter z-ai/glm-5.2 regularcloud/fp8
 assert_jq '.env.M_SWITCHER_ENDPOINT == "regularcloud/fp8"
            and .env.M_SWITCHER_ENDPOINT_NAME == "RegularCloud"
            and .env.CLAUDE_CODE_MAX_CONTEXT_TOKENS == "524288"
@@ -95,26 +223,68 @@ assert_jq '.env.M_SWITCHER_ENDPOINT == "regularcloud/fp8"
            and (.modelOverrides | has("claude-sonnet-4-6") | not)' "$SETTINGS" \
   "explicit endpoint selection did not override the cheapest endpoint"
 
+# An endpoint advertising exactly 1,000,000 tokens is a genuine 1M route.
+run openrouter z-ai/glm-5.2 venice/fp8
+assert_jq '(.env.ANTHROPIC_MODEL | endswith("[1m]"))
+           and .env.CLAUDE_CODE_MAX_CONTEXT_TOKENS == "1000000"
+           and .modelOverrides["claude-sonnet-4-6"] == (.env.ANTHROPIC_MODEL | sub("\\[1m\\]$"; ""))' "$SETTINGS" \
+  "exact 1M endpoint was not treated as a 1M route"
+
+# A bare provider tag is narrowed to that exact endpoint by ignoring its
+# suffixed siblings, and the narrowed preset is reused on the next switch.
+run openrouter z-ai/glm-5.2 fireworks
+assert_jq '.provider.only == ["fireworks"]
+           and .provider.ignore == ["fireworks/fast"]
+           and .provider.allow_fallbacks == false' "$M_TEST_LOG" \
+  "bare provider tag was not narrowed with provider.ignore"
+rm -f "$M_TEST_LOG"
+run openrouter z-ai/glm-5.2 fireworks
+[[ ! -f "$M_TEST_LOG" ]] || fail "narrowed preset was re-created"
+
+# Unavailable, tool-less, unhealthy or unknown endpoints are refused without
+# touching settings.
+before="$(snapshot "$SETTINGS")"
+expect_rc 2 openrouter z-ai/glm-5.2 notools
+expect_rc 2 openrouter z-ai/glm-5.2 together
+expect_rc 2 openrouter z-ai/glm-5.2 nope/tag
+grep -q 'unavailable or lacks tool support' "$OUTPUT" || fail "unknown endpoint was not explained"
+expect_rc 2 openrouter nonexistent/model
+grep -q "unknown model 'nonexistent/model'" "$OUTPUT" || fail "unknown model was not explained"
+[[ "$(snapshot "$SETTINGS")" == "$before" ]] || fail "a refused endpoint/model modified settings"
+
 # The automatic free router is a direct model route: it lets OpenRouter choose
 # a tool-capable free model per request and therefore skips endpoint pinning.
-"$ROOT/m" openrouter openrouter/free > "$OUTPUT"
+run openrouter openrouter/free
 assert_jq '.env.ANTHROPIC_MODEL == "openrouter/free"
            and .env.ANTHROPIC_DEFAULT_OPUS_MODEL == "openrouter/free"
+           and .env.ANTHROPIC_DEFAULT_FABLE_MODEL == "openrouter/free"
            and .env.M_SWITCHER_MODEL == "openrouter/free"
            and .env.CLAUDE_CODE_MAX_CONTEXT_TOKENS == "200000"
            and .modelOverrides["claude-sonnet-4-6"] == "openrouter/free"
            and (.env | has("M_SWITCHER_ENDPOINT") | not)' "$SETTINGS" \
   "automatic free router was not configured as a direct route"
-"$ROOT/m" status > "$OUTPUT"
+run status
 grep -q 'model: openrouter/free' "$OUTPUT" || fail "status omitted free router"
 if grep -q 'endpoint:' "$OUTPUT"; then fail "free router incorrectly reported a pinned endpoint"; fi
+expect_rc 2 openrouter openrouter/free streamlake/fp8
+grep -q 'does not accept an endpoint' "$OUTPUT" || fail "direct route accepted an endpoint"
+
+# Without a model in a non-interactive shell, m installs the provider's static
+# env block (its ~anthropic/... defaults) and clears dynamic selection keys.
+run openrouter
+assert_jq '.env.ANTHROPIC_MODEL == "~anthropic/claude-sonnet-latest"
+           and (.env | has("M_SWITCHER_MODEL") | not)
+           and (.modelOverrides | has("claude-sonnet-4-6") | not)' "$SETTINGS" \
+  "default OpenRouter switch did not install the static env block"
 
 # Returning to Claude removes every provider-owned and dynamic selection key
 # while preserving user-owned settings.
-"$ROOT/m" claude > "$OUTPUT"
+run claude
 assert_jq '.env == {"KEEP_ME":"yes"} and .permissions.allow == ["Read"]
            and .modelOverrides == {"claude-opus-4-6":"user/opus-route"}' "$SETTINGS" \
   "Claude round trip left provider keys or removed user settings"
+run status
+grep -q '^active: claude (anthropic default)' "$OUTPUT" || fail "status did not report the Anthropic default"
 
 # A user-owned entry at m-switcher's recognition key is never overwritten or
 # later removed. The switch still works, but explains that Claude's cosmetic
@@ -122,14 +292,155 @@ assert_jq '.env == {"KEEP_ME":"yes"} and .permissions.allow == ["Read"]
 jq '.modelOverrides["claude-sonnet-4-6"] = "user/sonnet-route"' \
   "$SETTINGS" > "$SETTINGS.next"
 mv "$SETTINGS.next" "$SETTINGS"
-"$ROOT/m" openrouter openrouter/free > "$OUTPUT"
+run openrouter openrouter/free
 assert_jq '.modelOverrides["claude-sonnet-4-6"] == "user/sonnet-route"
            and (.env | has("M_SWITCHER_MODEL_OVERRIDE_KEY") | not)' "$SETTINGS" \
   "user-owned recognition override was overwritten"
 grep -q 'kept your existing modelOverrides.claude-sonnet-4-6' "$OUTPUT" \
   || fail "override collision was not explained"
-"$ROOT/m" claude > "$OUTPUT"
+run claude
 assert_jq '.modelOverrides["claude-sonnet-4-6"] == "user/sonnet-route"' "$SETTINGS" \
   "user-owned recognition override was removed"
+
+# --- plain providers and the ~/.claude.json merge ---------------------------
+printf '%s\n' '{"oauthAccount":{"e":"x"},"hasCompletedOnboarding":false,"numStartups":3}' > "$CLAUDE_JSON"
+chmod 644 "$CLAUDE_JSON"
+claude_json_before="$(snapshot "$CLAUDE_JSON")"
+
+run zai
+assert_jq '.env.ANTHROPIC_BASE_URL == "https://api.z.ai/api/anthropic"
+           and .env.ANTHROPIC_AUTH_TOKEN == "zai-key"
+           and .env.KEEP_ME == "yes"
+           and (.env | has("ANTHROPIC_API_KEY") | not)
+           and (.env | has("M_SWITCHER_MODEL") | not)' "$SETTINGS" \
+  "plain provider switch did not install the Z.ai env block"
+[[ "$(snapshot "$CLAUDE_JSON")" == "$claude_json_before" ]] || fail "switching to Z.ai touched claude.json"
+run status
+grep -q '^active: Z.ai (glm-5.3)' "$OUTPUT" || fail "status did not derive Z.ai from its base URL"
+
+# Cross-provider switch: no Z.ai key survives, Kimi's flags are merged into
+# ~/.claude.json additively with a private backup of the previous file.
+run kimi
+assert_jq '.env.ANTHROPIC_BASE_URL == "https://api.kimi.com/coding/"
+           and .env.ANTHROPIC_API_KEY == "kimi-key"
+           and (.env | has("ANTHROPIC_AUTH_TOKEN") | not)
+           and (.env | has("API_TIMEOUT_MS") | not)
+           and .env.KEEP_ME == "yes"
+           and .permissions.allow == ["Read"]' "$SETTINGS" \
+  "cross-provider switch leaked Z.ai keys or lost user settings"
+assert_jq '.oauthAccount.e == "x" and .numStartups == 3
+           and .hasCompletedOnboarding == true and .penguinModeOrgEnabled == true' "$CLAUDE_JSON" \
+  "claude.json was not merged additively"
+assert_private "$CLAUDE_JSON" "claude.json is not private after the merge"
+assert_private "$CLAUDE_JSON.bak" "claude.json.bak is not private"
+assert_jq '.hasCompletedOnboarding == false' "$CLAUDE_JSON.bak" "claude.json.bak does not hold the previous file"
+run status
+grep -q '^active: Kimi Code' "$OUTPUT" || fail "status did not derive Kimi from its base URL"
+
+# A repeated switch is a no-op for claude.json (no rewrite, backup untouched).
+run kimi
+assert_jq '.hasCompletedOnboarding == false' "$CLAUDE_JSON.bak" "claude.json was rewritten although nothing changed"
+
+# A broken ~/.claude.json blocks the switch before settings.json is touched
+# and leaves no temp file behind.
+run zai
+printf 'not json' > "$CLAUDE_JSON"
+before="$(snapshot "$SETTINGS")"
+expect_rc 1 kimi
+grep -q 'not a JSON object' "$OUTPUT" || fail "broken claude.json was not explained: $(cat "$OUTPUT")"
+[[ "$(snapshot "$SETTINGS")" == "$before" ]] || fail "settings were switched despite a broken claude.json"
+[[ "$(cat "$CLAUDE_JSON")" == "not json" ]] || fail "broken claude.json was modified"
+litter=("$CLAUDE_JSON".??????(N))
+(( ${#litter} == 0 )) || fail "temp file left next to claude.json: ${litter[*]}"
+printf '[]\n' > "$CLAUDE_JSON"
+expect_rc 1 kimi
+[[ "$(snapshot "$SETTINGS")" == "$before" ]] || fail "settings were switched despite an array claude.json"
+
+# An empty ~/.claude.json is treated as {}.
+: > "$CLAUDE_JSON"
+run kimi
+assert_jq '. == {"penguinModeOrgEnabled":true,"hasCompletedOnboarding":true}' "$CLAUDE_JSON" \
+  "empty claude.json was not treated as an empty object"
+
+# A missing ~/.claude.json is created.
+rm -f "$CLAUDE_JSON"
+run zai
+run kimi
+assert_jq '.penguinModeOrgEnabled == true' "$CLAUDE_JSON" "missing claude.json was not created"
+
+run claude
+assert_jq '.env == {"KEEP_ME":"yes"}' "$SETTINGS" "round trip from Kimi left provider keys"
+
+# --- environment robustness -------------------------------------------------
+# User shell options in ~/.zshenv (noclobber, ksharrays) must not change what
+# m writes or which endpoint it pins.
+mkdir -p "$TEST_TMP/zdot"
+printf 'setopt noclobber ksharrays\n' > "$TEST_TMP/zdot/.zshenv"
+ZDOTDIR="$TEST_TMP/zdot" run openrouter z-ai/glm-5.2
+assert_jq '.env.M_SWITCHER_ENDPOINT == "streamlake/fp8"' "$SETTINGS" \
+  "user shell options changed the pinned endpoint"
+run claude
+
+# Symlinked config files are written through, not replaced.
+ln -s "$SETTINGS" "$TEST_TMP/settings.link.json"
+M_SETTINGS="$TEST_TMP/settings.link.json" run zai
+[[ -L "$TEST_TMP/settings.link.json" ]] || fail "symlinked settings.json was replaced by a regular file"
+assert_jq '.env.ANTHROPIC_BASE_URL == "https://api.z.ai/api/anthropic"' "$SETTINGS" \
+  "write through the settings symlink did not reach the target"
+run claude
+
+# A fresh install can run m before Claude Code has created settings.json.
+mkdir -p "$TEST_TMP/fresh"
+M_SETTINGS="$TEST_TMP/fresh/settings.json" run status
+grep -q '^active: claude' "$OUTPUT" || fail "m did not run without a settings.json"
+grep -q 'created' "$OUTPUT.err" || fail "creating settings.json was not announced"
+[[ "$(cat "$TEST_TMP/fresh/settings.json")" == "{}" ]] || fail "created settings.json is not an empty object"
+assert_private "$TEST_TMP/fresh/settings.json" "created settings.json is not private"
+rc=0
+M_SETTINGS="$TEST_TMP/nodir/settings.json" m status > "$OUTPUT" 2>&1 || rc=$?
+(( rc == 1 )) || fail "missing settings directory exited $rc, expected 1"
+
+# --- install.sh -------------------------------------------------------------
+home="$TEST_TMP/home"
+mkdir -p "$home"
+HOME="$home" sh "$ROOT/install.sh" > "$OUTPUT"
+[[ -x "$home/.local/bin/m" ]] || fail "install.sh did not install m"
+grep -q 'created ~/.claude/providers.json' "$OUTPUT" || fail "install.sh did not report creating providers.json"
+assert_private "$home/.claude/providers.json" "installed providers.json is not private"
+HOME="$home" sh "$ROOT/install.sh" > "$OUTPUT"
+grep -q 'kept existing' "$OUTPUT" || fail "second install.sh run was not a no-op"
+
+# Upgrade path: a hand-made 644 providers.json with a real key and a stale
+# 644 backup are merged with the bundled defaults and made private.
+home2="$TEST_TMP/home2"
+mkdir -p "$home2/.claude"
+printf '%s\n' '{"zai":{"label":"Z","env":{"ANTHROPIC_AUTH_TOKEN":"real"}}}' > "$home2/.claude/providers.json"
+printf '{}\n' > "$home2/.claude/settings.json.bak"
+chmod 644 "$home2/.claude/providers.json" "$home2/.claude/settings.json.bak"
+HOME="$home2" sh "$ROOT/install.sh" > "$OUTPUT"
+grep -q 'added new bundled provider fields' "$OUTPUT" || fail "install.sh did not merge new providers"
+assert_jq '.zai.env.ANTHROPIC_AUTH_TOKEN == "real" and .zai.label == "Z" and has("openrouter")' \
+  "$home2/.claude/providers.json" "install.sh merge lost user values or new providers"
+assert_private "$home2/.claude/providers.json" "merged providers.json is not private"
+assert_private "$home2/.claude/providers.json.bak" "providers.json.bak from install.sh is not private"
+assert_private "$home2/.claude/settings.json.bak" "install.sh did not repair a stale settings.json.bak"
+
+# A symlinked providers.json is updated in place.
+home3="$TEST_TMP/home3"
+mkdir -p "$home3/.claude" "$home3/dotfiles"
+printf '%s\n' '{"zai":{"label":"Z","env":{"ANTHROPIC_AUTH_TOKEN":"real"}}}' > "$home3/dotfiles/providers.json"
+ln -s "$home3/dotfiles/providers.json" "$home3/.claude/providers.json"
+HOME="$home3" sh "$ROOT/install.sh" > "$OUTPUT"
+[[ -L "$home3/.claude/providers.json" ]] || fail "install.sh replaced a symlinked providers.json"
+assert_jq 'has("openrouter") and .zai.env.ANTHROPIC_AUTH_TOKEN == "real"' "$home3/dotfiles/providers.json" \
+  "install.sh did not update the symlink target"
+assert_private "$home3/dotfiles/providers.json" "symlink target was not made private"
+
+# --- secrets never reach argv; auth always reaches the API ------------------
+grep -q '^Authorization: Bearer sk-or-test$' "$M_TEST_LOG.headers" \
+  || fail "OpenRouter requests were not authenticated through the header file"
+for secret in sk-or-test sk-bad zai-key kimi-key; do
+  if grep -q -- "$secret" "$ARGV_LOG"; then fail "secret '$secret' appeared in a jq/curl argv"; fi
+done
 
 echo "ok - m-switcher integration tests"

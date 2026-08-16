@@ -53,6 +53,7 @@
       "endpointsUrl": "https://openrouter.ai/api/v1/models",
       "presetsUrl": "https://openrouter.ai/api/v1/presets",
       "recognitionOverride": "claude-sonnet-4-6",
+      "excludeIdSuffixes": [":batch"],
       "specialModels": [
         {
           "id": "openrouter/free",

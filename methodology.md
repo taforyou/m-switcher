@@ -94,6 +94,7 @@ Never edit the target in place:
 tmp="$(mktemp "$SETTINGS.XXXXXX")"
 jq … "$SETTINGS" > "$tmp" || { rm -f "$tmp"; return 1; }
 cp "$SETTINGS" "$SETTINGS.bak"
+chmod 600 "$SETTINGS.bak"
 mv "$tmp" "$SETTINGS"
 ```
 
@@ -101,6 +102,16 @@ If jq fails (syntax error in providers.json, bad filter), the temp file
 is discarded and `settings.json` is untouched. `mv` on the same
 filesystem is atomic, so a crash can't leave a half-written config. The
 `.bak` is a one-step undo.
+
+Two details matter for files that hold API keys. `cp` gives a *new*
+backup the source's mode but keeps the mode of an *existing* one, so a
+`.bak` created 644 by an earlier version (or from a 644 settings.json,
+which is how Claude Code creates it) would stay world-readable forever —
+hence the explicit `chmod 600` after every backup, plus `umask 077` at
+the top of the script so anything else it creates is private too. And
+`mv` over a symlink replaces the link itself, so the three paths are
+resolved with zsh's `:A` at startup and dotfiles-managed configs are
+written through.
 
 ### 5. Placeholder guard
 
@@ -118,17 +129,26 @@ Some providers need one-time flags in `~/.claude.json` (Kimi Code's docs
 ship a Node script setting `penguinModeOrgEnabled` and
 `hasCompletedOnboarding`). Rather than special-casing, a provider entry
 may carry a `claudeJson` object that gets shallow-merged
-(`. + $add`, same atomic-write pattern) into `~/.claude.json` on switch.
-The merge is additive and idempotent, mirroring the providers' own
-scripts, which also never remove the flags. The other half of Kimi's
+(`. + $add`, same atomic-write pattern with a `.bak`) into
+`~/.claude.json` on switch. The merge is prepared and validated *before*
+`settings.json` is committed and committed first: a corrupt or non-object
+`~/.claude.json` therefore blocks the switch instead of leaving
+`settings.json` switched without the flags, and a merge that would change
+nothing is skipped. The merge is additive and idempotent, mirroring the
+providers' own scripts, which also never remove the flags (so they persist
+after switching away). The other half of Kimi's
 script — deleting stale `ANTHROPIC_*_MODEL` env entries — is already what
 decision 2 does on every switch.
 
 ### 7. The picker is cosmetic; the plumbing is scriptable
 
-The arrow-key UI (`read -sk1`, `ESC [ A/B` sequences, redraw with
-`\e[NA`/`\e[K`, cursor hidden via `\e[?25l` with a zsh `always` block to
-restore it) is a thin layer over `switch_to`. When stdin/stdout are not
+The arrow-key UI (`read -sk1`, escape sequences parsed byte by byte so
+that Left/Home/F-keys/Alt+key are ignored rather than mistaken for cancel,
+redraw with `\e[NA`/`\e[K` over lines clipped to the terminal width so
+nothing wraps, cursor hidden via `\e[?25l` and the tty kept raw for the
+whole picker, both restored by a zsh `always` block on the normal path and
+by INT/TERM/HUP/EXIT traps otherwise — `always` does not run when zsh dies
+from a signal) is a thin layer over `switch_to`. When stdin/stdout are not
 TTYs, bare `m` degrades to `status`, so the tool stays usable from
 scripts and CI.
 

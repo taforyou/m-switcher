@@ -118,6 +118,14 @@ reused. Exact pinning deliberately disables provider fallback: if the selected
 endpoint is unavailable, the request fails instead of silently using a more
 expensive host. Run `m` again to choose another endpoint.
 
+A bare provider tag such as `fireworks` would also match that provider's
+suffixed endpoints (`fireworks/fast`, regional variants) under OpenRouter's
+base-slug matching, so `m` adds every sibling tag of the model to
+`provider.ignore` in the preset; suffixed tags such as `streamlake/fp8` are
+already exact. Catalog variants listed in `modelCatalog.excludeIdSuffixes`
+(bundled: `:batch`, OpenRouter's Batch-API models) are hidden from the picker
+and cannot be pinned.
+
 The selected endpoint's live `context_length` is also written to
 `CLAUDE_CODE_MAX_CONTEXT_TOKENS`. Generated `@preset/...` IDs are unknown to
 Claude Code, which otherwise assumes a 200K context window. Declaring the real
@@ -180,12 +188,21 @@ The bundled non-OpenRouter examples are:
 - **Scoped writes.** Switching removes only environment keys claimed by a
   configured provider or its dynamic model selection. Hooks, permissions, and
   unrelated environment variables are preserved.
-- **Atomic with backups.** Settings and provider-key changes use a temporary
-  file and keep the previous file as `.bak`.
+- **Atomic with backups.** Settings, provider-key and `~/.claude.json` changes
+  use a temporary file and keep the previous file as `.bak`. Every file `m`
+  writes — including the backups, which hold the previous provider's key — is
+  mode `600`; `./install.sh` also tightens backups left by earlier versions.
+  Symlinked config files are written through, not replaced.
 - **Key validation.** `m key openrouter` hides input and validates it through
-  OpenRouter's `/api/v1/key` endpoint before saving. Keys remain stored locally
-  in `~/.claude/providers.json`, which the installer and key command protect
-  with mode `600`.
+  OpenRouter's `/api/v1/key` endpoint before saving; the key never appears on
+  a command line (`curl` reads it from a private header file, `jq` from the
+  environment). Providers without a `validationUrl` (Z.ai, Kimi) are saved and
+  reported as *not validated*. Keys remain stored locally in
+  `~/.claude/providers.json` with mode `600`.
+- **Consistent switches.** A provider's `claudeJson` flags are validated and
+  written to `~/.claude.json` before `settings.json` is committed, so a broken
+  `~/.claude.json` blocks the switch instead of leaving it half-applied. Those
+  flags are merged additively and stay in place after switching away.
 - **No silent endpoint fallback.** Exact endpoint presets use `only` and set
   `allow_fallbacks` to false.
 - **Accurate context limits.** The endpoint's advertised context length
@@ -204,9 +221,14 @@ The bundled non-OpenRouter examples are:
 tests/test_m.zsh
 ```
 
-The suite uses a mock OpenRouter API and verifies key storage, prefix search,
-discount ordering, exact endpoint pinning, settings preservation, status, and
-the round trip back to Anthropic.
+The suite uses a mock OpenRouter API (`tests/bin/curl`, which also records
+every request, header file and argv) and verifies key validation and storage,
+prefix search, `:batch` exclusion, discount ordering, exact endpoint pinning
+including sibling narrowing and preset reuse, plain-provider switching and the
+`~/.claude.json` merge, file modes, symlinks, `install.sh`, settings
+preservation, status, the round trip back to Anthropic, and that no key ever
+reaches a `curl`/`jq` command line. The interactive pickers are not covered;
+drive them under a pty (`expect`) when changing them.
 
 ## Troubleshooting
 
@@ -224,7 +246,12 @@ the round trip back to Anthropic.
   notice, but its exact compaction limit is configured. Do not append `[1m]` to
   `openrouter/free`; its routed model varies by request.
 - **Rolled a bad config:** the previous settings file is
-  `~/.claude/settings.json.bak`.
+  `~/.claude/settings.json.bak` (and `~/.claude.json.bak` when a provider's
+  `claudeJson` flags were merged).
+- **Picker looks wrong or the cursor disappeared:** the pickers clip every
+  line to the terminal width and restore the cursor and tty on Ctrl-C; if a
+  terminal still ends up in a bad state (for example after `kill -9`), run
+  `reset`.
 
 ## License
 

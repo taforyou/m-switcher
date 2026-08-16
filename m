@@ -14,13 +14,29 @@
 # Providers live in ~/.claude/providers.json. Paths can be overridden with
 # M_SETTINGS, M_CLAUDE_JSON, and M_PROVIDERS for testing.
 
+emulate -R zsh   # ignore user options from ~/.zshenv (noclobber, ksharrays, ...)
 set -e
+umask 077        # every file m creates (settings, backups, temp files) is private
 SETTINGS="${M_SETTINGS:-$HOME/.claude/settings.json}"
 CLAUDE_JSON="${M_CLAUDE_JSON:-$HOME/.claude.json}"
 PROV="${M_PROVIDERS:-$HOME/.claude/providers.json}"
 
-[[ -f "$SETTINGS" ]] || { echo "missing $SETTINGS" >&2; exit 1; }
-[[ -f "$PROV"     ]] || { echo "missing $PROV" >&2; exit 1; }
+if [[ ! -f "$SETTINGS" ]]; then
+  # Claude Code creates settings.json on first launch; a fresh install can
+  # run m before that, so create an empty one instead of refusing to start.
+  if [[ -d "${SETTINGS:h}" ]]; then
+    printf '{}\n' > "$SETTINGS"
+    echo "note: created $SETTINGS" >&2
+  else
+    echo "missing $SETTINGS (directory ${SETTINGS:h} does not exist; run claude once or create it)" >&2
+    exit 1
+  fi
+fi
+[[ -f "$PROV" ]] || { echo "missing $PROV" >&2; exit 1; }
+# Write through symlinks (dotfiles setups) instead of replacing them.
+SETTINGS="${SETTINGS:A}"
+PROV="${PROV:A}"
+CLAUDE_JSON="${CLAUDE_JSON:A}"
 
 names=(claude ${(f)"$(jq -r 'keys_unsorted[]' "$PROV")"})
 HTTP_DATA=""
@@ -31,6 +47,24 @@ SELECTED_MODEL=""
 SELECTED_ENDPOINT=""
 SELECTED_ENDPOINT_NAME=""
 SELECTED_CONTEXT_LENGTH=""
+KEY_VALIDATED=0
+typeset -ga M_TMP_FILES
+M_CURSOR_HIDDEN=0
+M_SAVED_STTY=""
+M_PICKER_WIDTH=79
+
+# zsh `always` blocks do not run when the shell dies from a signal or an
+# errexit, so terminal state and temp files are also cleaned up from traps.
+cleanup() {
+  if (( M_CURSOR_HIDDEN )); then printf '\e[?25h'; M_CURSOR_HIDDEN=0; fi
+  if [[ -n "$M_SAVED_STTY" ]]; then stty "$M_SAVED_STTY" 2>/dev/null || true; M_SAVED_STTY=""; fi
+  if (( ${#M_TMP_FILES} )); then rm -f -- "${M_TMP_FILES[@]}"; M_TMP_FILES=(); fi
+  return 0
+}
+trap 'cleanup; trap - INT; kill -INT $$; exit 130' INT
+trap 'cleanup; exit 143' TERM
+trap 'cleanup; exit 129' HUP
+trap 'cleanup' EXIT
 
 usage() {
   cat <<'EOF'
@@ -156,14 +190,18 @@ http_request() {
   header_file="$(mktemp "${prefix}.header.XXXXXX")"
   response_file="$(mktemp "${prefix}.response.XXXXXX")"
   chmod 600 "$header_file" "$response_file"
+  M_TMP_FILES+=("$header_file" "$response_file")
   if [[ -n "$payload" ]]; then
     payload_file="$(mktemp "${prefix}.payload.XXXXXX")"
     chmod 600 "$payload_file"
+    M_TMP_FILES+=("$payload_file")
   fi
   {
     printf 'Authorization: Bearer %s\n' "$token" > "$header_file"
     [[ -n "$payload_file" ]] && printf '%s' "$payload" > "$payload_file"
-    args=(-sS --connect-timeout 10 --max-time 30 -o "$response_file" -w '%{http_code}'
+    # -q must come first: it stops curl from reading ~/.curlrc, whose
+    # verbose/trace options would print the Authorization header.
+    args=(-q -sS --connect-timeout 10 --max-time 30 -o "$response_file" -w '%{http_code}'
           -X "$method" -H "@$header_file")
     if [[ -n "$payload_file" ]]; then
       args+=(-H 'Content-Type: application/json' --data-binary "@$payload_file")
@@ -191,8 +229,11 @@ print_api_error() {
   echo "$message (HTTP $HTTP_STATUS)" >&2
 }
 
+# Sets KEY_VALIDATED=1 only when the provider has a validationUrl and the key
+# passed it; providers without one (Z.ai, Kimi) are saved unvalidated.
 validate_key() {
   local name="$1" token="$2" url
+  KEY_VALIDATED=0
   url="$(jq -r --arg n "$name" '.[$n].modelCatalog.validationUrl // ""' "$PROV")"
   [[ -z "$url" ]] && return 0
   http_request GET "$url" "$token" || return 1
@@ -204,6 +245,7 @@ validate_key() {
     echo "API key validation returned an unexpected response" >&2
     return 1
   }
+  KEY_VALIDATED=1
 }
 
 configure_key() {
@@ -232,15 +274,22 @@ configure_key() {
   validate_key "$name" "$token" || return 3
 
   tmp="$(mktemp "$PROV.XXXXXX")"
-  if ! jq --arg n "$name" --arg key "$key_env" --arg value "$token" \
-       '.[$n].env[$key] = $value' "$PROV" > "$tmp"; then
+  M_TMP_FILES+=("$tmp")
+  # The token reaches jq through the environment, never through argv.
+  if ! value="$token" jq --arg n "$name" --arg key "$key_env" \
+       '.[$n].env[$key] = env.value' "$PROV" > "$tmp"; then
     rm -f "$tmp"
     return 1
   fi
   chmod 600 "$tmp"
   cp "$PROV" "$PROV.bak"
+  chmod 600 "$PROV.bak"   # cp keeps a pre-existing .bak's (possibly 644) mode
   mv "$tmp" "$PROV"
-  echo "saved and validated API key for $(label_of "$name")"
+  if (( KEY_VALIDATED )); then
+    echo "saved and validated API key for $(label_of "$name")"
+  else
+    echo "saved API key for $(label_of "$name") (not validated: provider has no validationUrl)"
+  fi
 }
 
 ensure_credential() {
@@ -257,7 +306,7 @@ ensure_credential() {
 }
 
 fetch_models() {
-  local name="$1" token url special
+  local name="$1" token url special exclude
   token="$(credential_of "$name")"
   url="$(jq -r --arg n "$name" '.[$n].modelCatalog.url // ""' "$PROV")"
   [[ -n "$url" ]] || { echo "provider '$name' has no model catalog" >&2; return 2; }
@@ -271,10 +320,16 @@ fetch_models() {
     return 1
   }
   special="$(jq -c --arg n "$name" '.[$n].modelCatalog.specialModels // []' "$PROV")"
-  MODEL_DATA="$(printf '%s' "$HTTP_DATA" | jq -c --argjson special "$special" '
+  # excludeIdSuffixes drops catalog variants that are not usable for an
+  # interactive Claude Code session (OpenRouter's ":batch" Batch-API models).
+  # Filtering here also makes model_exists reject them.
+  exclude="$(jq -c --arg n "$name" '.[$n].modelCatalog.excludeIdSuffixes // []' "$PROV")"
+  MODEL_DATA="$(printf '%s' "$HTTP_DATA" | jq -c --argjson special "$special" --argjson exclude "$exclude" '
     .data as $models
     | .data = ($special + [
-        $models[] | .id as $id | select(($special | any(.id == $id)) | not)
+        $models[] | .id as $id
+        | select(($special | any(.id == $id)) | not)
+        | select(($exclude | any(. as $s | $id | endswith($s))) | not)
       ])
   ')"
 }
@@ -325,13 +380,89 @@ model_routes_directly() {
   ' "$PROV" >/dev/null
 }
 
+# --- interactive pickers ----------------------------------------------------
+# All three pickers redraw a fixed number of lines in place, so every line is
+# clipped to the terminal width (a wrapped line would shift the frame), the
+# cursor is hidden and the tty is kept raw for the whole picker; cleanup()
+# undoes both on signals, picker_leave() on the normal path.
+
+picker_enter() {
+  local cols
+  cols="$(tput cols 2>/dev/null || true)"
+  [[ "$cols" == <-> && cols -gt 0 ]] || cols="${COLUMNS:-80}"
+  [[ "$cols" == <-> && cols -gt 0 ]] || cols=80
+  M_PICKER_WIDTH=$(( cols - 1 ))
+  if [[ -z "$M_SAVED_STTY" ]]; then
+    M_SAVED_STTY="$(stty -g 2>/dev/null || true)"
+    # Raw/no-echo for the whole picker: zsh's read -k restores cooked mode
+    # between keys, and a key arriving during a redraw would otherwise be
+    # echoed onto the frame (or a backspace swallowed by the line discipline).
+    [[ -n "$M_SAVED_STTY" ]] && { stty -icanon -echo min 1 time 0 2>/dev/null || true; }
+  fi
+  printf '\e[?25l'
+  M_CURSOR_HIDDEN=1
+}
+
+picker_leave() {
+  if (( M_CURSOR_HIDDEN )); then printf '\e[?25h'; M_CURSOR_HIDDEN=0; fi
+  if [[ -n "$M_SAVED_STTY" ]]; then stty "$M_SAVED_STTY" 2>/dev/null || true; M_SAVED_STTY=""; fi
+  return 0
+}
+
+# Prints one picker line clipped to the terminal width. $2: hl | dim | (plain).
+picker_line() {
+  local text="$1" style="${2:-}"
+  text="${text[1,M_PICKER_WIDTH]}"
+  case "$style" in
+    hl)  printf '\e[K\e[36m%s\e[0m\n' "$text" ;;
+    dim) printf '\e[K\e[2m%s\e[0m\n' "$text" ;;
+    *)   printf '\e[K%s\n' "$text" ;;
+  esac
+}
+
+# Reads one keypress into REPLY: up, down, enter, backspace, esc (a lone
+# Escape or EOF), char:<c> for a printable character, or other for any complete
+# escape sequence m does not use (Left, Home, F-keys, Alt+key, ...), which the
+# pickers ignore instead of aborting.
+read_key() {
+  local key rest ch
+  REPLY=other
+  read -sk1 key || { REPLY=esc; return 0; }
+  case "$key" in
+    $'\e')
+      rest=""
+      while read -sk1 -t 0.05 ch 2>/dev/null; do
+        rest+="$ch"
+        if [[ "$rest" == \[* ]]; then
+          # CSI: ESC [ parameters... final byte 0x40-0x7E
+          (( ${#rest} > 1 && #ch >= 64 && #ch <= 126 )) && break
+        elif [[ "$rest" == O* ]]; then
+          # SS3: ESC O <one byte> (application-mode arrows)
+          (( ${#rest} >= 2 )) && break
+        else
+          break   # Alt/Option+key or another two-byte sequence
+        fi
+      done
+      case "$rest" in
+        '')        REPLY=esc ;;
+        '[A'|'OA') REPLY=up ;;
+        '[B'|'OB') REPLY=down ;;
+        *)         REPLY=other ;;
+      esac ;;
+    $'\x7f'|$'\b') REPLY=backspace ;;
+    $'\n'|$'\r')   REPLY=enter ;;
+    *) [[ "$key" == [[:print:]] ]] && REPLY="char:$key" ;;
+  esac
+  return 0
+}
+
 model_picker() {
   local query="${1:-}" sel=1 page_size=10 first=1 active_model
-  local key rest row id tail display context mark text i total start
+  local row id tail display context mark text i total start index
   local -a rows
   SELECTED_MODEL=""
   active_model="$(current_model 2>/dev/null || true)"
-  printf '\e[?25l'
+  picker_enter
   {
     while true; do
       rows=(${(f)"$(model_rows "$query")"})
@@ -343,10 +474,10 @@ model_picker() {
 
       (( first )) || printf '\e[13A'
       first=0
-      printf '\e[KOpenRouter models (%d matches)\n' "$total"
-      printf '\e[KSearch: %-60.60s\n' "$query"
+      picker_line "OpenRouter models ($total matches)"
+      picker_line "Search: $query"
       for i in {1..$page_size}; do
-        local index=$(( start + i ))
+        index=$(( start + i ))
         if (( index <= total )); then
           row="${rows[index]}"
           id="${row%%$'\t'*}"
@@ -355,45 +486,36 @@ model_picker() {
           context="${tail##*$'\t'}"
           mark=" "
           [[ "$id" == "$active_model" ]] && mark="o"
-          text="${display} — ${id} (${context})"
-          if (( index == sel )); then
-            printf '\e[K  \e[36m%s %-70.70s\e[0m\n' "$mark" "$text"
-          else
-            printf '\e[K  %s %-70.70s\n' "$mark" "$text"
-          fi
+          text="  ${mark} ${display} — ${id} (${context})"
+          if (( index == sel )); then picker_line "$text" hl; else picker_line "$text"; fi
         else
-          printf '\e[K\n'
+          picker_line ""
         fi
       done
-      printf '\e[K\e[2mtype to search, backspace to erase, arrows to move, return to select, esc to cancel\e[0m\n'
+      picker_line "type to search, backspace erases, arrows move, return selects, esc cancels" dim
 
-      read -sk1 key || { key=$'\e'; }
-      case "$key" in
-        $'\e')
-          rest=""
-          read -sk2 -t 0.05 rest 2>/dev/null || true
-          case "$rest" in
-            '[A') (( sel > 1 )) && (( sel-- )) || true ;;
-            '[B') (( sel < total )) && (( sel++ )) || true ;;
-            *) return 130 ;;
-          esac ;;
-        $'\x7f'|$'\b')
+      read_key
+      case "$REPLY" in
+        up)   (( sel > 1 )) && (( sel-- )) || true ;;
+        down) (( sel < total )) && (( sel++ )) || true ;;
+        backspace)
           if (( ${#query} > 0 )); then query="${query[1,-2]}"; sel=1; fi ;;
-        $'\n'|$'\r')
+        enter)
           if (( total > 0 )); then
             row="${rows[sel]}"
             SELECTED_MODEL="${row%%$'\t'*}"
             return 0
           fi ;;
-        *)
-          if [[ "$key" == [[:print:]] && ${#query} -lt 60 ]]; then
-            query+="$key"
+        esc) return 130 ;;
+        char:*)
+          if (( ${#query} < 60 )); then
+            query+="${REPLY#char:}"
             sel=1
           fi ;;
       esac
     done
   } always {
-    printf '\e[?25h'
+    picker_leave
   }
 }
 
@@ -429,6 +551,9 @@ endpoint_rows() {
       elif ((.provider_name // "" | lower) | contains($q))
         or ((.tag // "" | lower) | contains($q)) then 1
       else 2 end;
+    def fmt_context:
+      if . >= 1000000 then (((. / 1000000 * 10) | floor) / 10 | tostring) + "M"
+      else ((. / 1000 | floor | tostring) + "k") end;
     .data.endpoints
     | map(select((.status // 0) == 0 and ((.supported_parameters // []) | index("tools"))))
     | map(. + {"_m_rank": rank($q), "_m_price": price})
@@ -442,6 +567,7 @@ endpoint_rows() {
         ((((((.pricing.completion | tonumber?) // 0) * 1000000000000) | round) / 1000000) | tostring),
         (((((.pricing.discount // 0) * 100) + 0.5) | floor) | tostring),
         (.quantization // "unknown"),
+        ((.context_length // 0 | floor) | fmt_context),
         ((.context_length // 0 | floor) | tostring)
       ]
     | @tsv
@@ -459,13 +585,17 @@ endpoint_details() {
 }
 
 endpoint_picker() {
-  local query="${1:-}" sel=1 page_size=10 first=1
-  local key rest row tag tail display input_price output_price discount quant context_length mark text i total start
+  local query="${1:-}" sel=1 page_size=10 first=1 cheapest_tag
+  local row tag tail display input_price output_price discount quant context mark text i total start index
   local -a rows
   SELECTED_ENDPOINT=""
   SELECTED_ENDPOINT_NAME=""
   SELECTED_CONTEXT_LENGTH=""
-  printf '\e[?25l'
+  # '*' marks the cheapest healthy endpoint of the whole list, whatever the
+  # current search shows (search results are ranked by match, then price).
+  cheapest_tag="$(endpoint_rows "" | head -n 1)"
+  cheapest_tag="${cheapest_tag%%$'\t'*}"
+  picker_enter
   {
     while true; do
       rows=(${(f)"$(endpoint_rows "$query")"})
@@ -477,10 +607,10 @@ endpoint_picker() {
 
       (( first )) || printf '\e[13A'
       first=0
-      printf '\e[KHosting endpoints — cheapest is selected by default (%d matches)\n' "$total"
-      printf '\e[KSearch: %-60.60s\n' "$query"
+      picker_line "Hosting endpoints — cheapest is selected by default ($total matches)"
+      picker_line "Search: $query"
       for i in {1..$page_size}; do
-        local index=$(( start + i ))
+        index=$(( start + i ))
         if (( index <= total )); then
           row="${rows[index]}"
           tag="${row%%$'\t'*}"; tail="${row#*$'\t'}"
@@ -488,52 +618,44 @@ endpoint_picker() {
           input_price="${tail%%$'\t'*}"; tail="${tail#*$'\t'}"
           output_price="${tail%%$'\t'*}"; tail="${tail#*$'\t'}"
           discount="${tail%%$'\t'*}"; tail="${tail#*$'\t'}"
-          quant="${tail%%$'\t'*}"; context_length="${tail##*$'\t'}"
+          quant="${tail%%$'\t'*}"; tail="${tail#*$'\t'}"
+          context="${tail%%$'\t'*}"
           mark=" "
-          (( index == 1 && start == 0 )) && mark="*"
-          text="${display} [${tag}] \$${input_price}/\$${output_price}/M ${quant}"
+          [[ -n "$cheapest_tag" && "$tag" == "$cheapest_tag" ]] && mark="*"
+          text="  ${mark} ${display} [${tag}] \$${input_price}/\$${output_price}/M ${quant} ${context}"
           (( discount > 0 )) && text+=" (${discount}% off)"
-          if (( index == sel )); then
-            printf '\e[K  \e[36m%s %-72.72s\e[0m\n' "$mark" "$text"
-          else
-            printf '\e[K  %s %-72.72s\n' "$mark" "$text"
-          fi
+          if (( index == sel )); then picker_line "$text" hl; else picker_line "$text"; fi
         else
-          printf '\e[K\n'
+          picker_line ""
         fi
       done
-      printf '\e[K\e[2m* cheapest; type to search, arrows to move, return to pin endpoint, esc to cancel\e[0m\n'
+      picker_line "* cheapest; type to search, arrows move, return pins, esc cancels" dim
 
-      read -sk1 key || { key=$'\e'; }
-      case "$key" in
-        $'\e')
-          rest=""
-          read -sk2 -t 0.05 rest 2>/dev/null || true
-          case "$rest" in
-            '[A') (( sel > 1 )) && (( sel-- )) || true ;;
-            '[B') (( sel < total )) && (( sel++ )) || true ;;
-            *) return 130 ;;
-          esac ;;
-        $'\x7f'|$'\b')
+      read_key
+      case "$REPLY" in
+        up)   (( sel > 1 )) && (( sel-- )) || true ;;
+        down) (( sel < total )) && (( sel++ )) || true ;;
+        backspace)
           if (( ${#query} > 0 )); then query="${query[1,-2]}"; sel=1; fi ;;
-        $'\n'|$'\r')
+        enter)
           if (( total > 0 )); then
             row="${rows[sel]}"
             SELECTED_ENDPOINT="${row%%$'\t'*}"
             tail="${row#*$'\t'}"
             SELECTED_ENDPOINT_NAME="${tail%%$'\t'*}"
-            SELECTED_CONTEXT_LENGTH="${tail##*$'\t'}"
+            SELECTED_CONTEXT_LENGTH="${row##*$'\t'}"
             return 0
           fi ;;
-        *)
-          if [[ "$key" == [[:print:]] && ${#query} -lt 60 ]]; then
-            query+="$key"
+        esc) return 130 ;;
+        char:*)
+          if (( ${#query} < 60 )); then
+            query+="${REPLY#char:}"
             sel=1
           fi ;;
       esac
     done
   } always {
-    printf '\e[?25h'
+    picker_leave
   }
 }
 
@@ -547,22 +669,33 @@ preset_slug() {
 }
 
 ensure_routing_preset() {
-  local name="$1" model="$2" endpoint="$3" token base slug url payload
+  local name="$1" model="$2" endpoint="$3" token base slug url payload ignore
   token="$(credential_of "$name")"
   base="$(jq -r --arg n "$name" '.[$n].modelCatalog.presetsUrl // ""' "$PROV")"
   [[ -n "$base" ]] || { echo "provider '$name' does not support exact endpoint routing" >&2; return 2; }
   slug="$(preset_slug "$model" "$endpoint")"
   url="${base%/}/$slug"
 
+  # A bare provider slug in provider.only (e.g. "fireworks") also matches that
+  # provider's suffixed endpoints ("fireworks/fast", regions) under OpenRouter's
+  # base-slug matching, so every sibling tag of the model is excluded
+  # explicitly. Suffixed tags such as "streamlake/fp8" are already exact.
+  ignore="$(printf '%s' "$ENDPOINT_DATA" | jq -c --arg tag "$endpoint" '
+    [.data.endpoints[]? | .tag // empty | select(. != $tag and startswith($tag + "/"))]
+    | unique
+  ' 2>/dev/null || true)"
+  [[ -n "$ignore" ]] || ignore="[]"
+
   # Reuse an identical preset. This avoids creating a new preset version each
   # time the same model/endpoint route is selected.
   http_request GET "$url" "$token" || return 1
   if [[ "$HTTP_STATUS" == 200 ]] && printf '%s' "$HTTP_DATA" | jq -e \
-       --arg model "$model" --arg endpoint "$endpoint" '
+       --arg model "$model" --arg endpoint "$endpoint" --argjson ignore "$ignore" '
        .data.designated_version.config as $c
        | $c.model == $model
          and $c.provider.only == [$endpoint]
          and $c.provider.allow_fallbacks == false
+         and (($c.provider.ignore // []) | sort) == ($ignore | sort)
      ' >/dev/null 2>&1; then
     printf '@preset/%s\n' "$slug"
     return 0
@@ -571,13 +704,13 @@ ensure_routing_preset() {
     return 1
   fi
 
-  payload="$(jq -nc --arg model "$model" --arg endpoint "$endpoint" '{
+  payload="$(jq -nc --arg model "$model" --arg endpoint "$endpoint" --argjson ignore "$ignore" '{
     model: $model,
     messages: [{role: "user", content: "m-switcher routing preset"}],
-    provider: {
+    provider: ({
       only: [$endpoint],
       allow_fallbacks: false
-    }
+    } + (if ($ignore | length) > 0 then {ignore: $ignore} else {} end))
   }')"
   http_request POST "${url}/messages" "$token" "$payload" || return 1
   if ! http_succeeded; then
@@ -642,8 +775,37 @@ switch_to() {
     fi
   fi
 
+  # Provider-declared ~/.claude.json flags (e.g. Kimi onboarding flags) are
+  # prepared and validated before anything is committed, so a broken
+  # ~/.claude.json can never leave settings.json half-switched.
+  local cj tmp2=""
+  cj="$(jq -c --arg n "$name" 'if $n == "claude" then {} else .[$n].claudeJson // {} end' "$PROV")"
+  if [[ "$cj" != "{}" ]]; then
+    if [[ -s "$CLAUDE_JSON" ]]; then
+      if ! jq -e 'type == "object"' "$CLAUDE_JSON" >/dev/null 2>&1; then
+        echo "refusing: $CLAUDE_JSON is not a JSON object; fix or move it aside, then retry" >&2
+        return 1
+      fi
+      if ! jq -e --argjson add "$cj" '. + $add == .' "$CLAUDE_JSON" >/dev/null 2>&1; then
+        tmp2="$(mktemp "${CLAUDE_JSON}.XXXXXX")"
+        M_TMP_FILES+=("$tmp2")
+        if ! jq --argjson add "$cj" '. + $add' "$CLAUDE_JSON" > "$tmp2"; then
+          rm -f "$tmp2"
+          echo "unable to update $CLAUDE_JSON" >&2
+          return 1
+        fi
+      fi
+    else
+      # Missing or empty: start from the provider's flags alone.
+      tmp2="$(mktemp "${CLAUDE_JSON}.XXXXXX")"
+      M_TMP_FILES+=("$tmp2")
+      printf '%s\n' "$cj" > "$tmp2"
+    fi
+  fi
+
   local tmp
   tmp="$(mktemp "$SETTINGS.XXXXXX")"
+  M_TMP_FILES+=("$tmp")
   if ! jq --slurpfile p "$PROV" --arg name "$name" --arg route "$effective_route" \
        --arg selectedModel "$selected_model" --arg endpoint "$endpoint" \
        --arg endpointName "$endpoint_name" --arg contextLength "$context_length" \
@@ -695,25 +857,23 @@ switch_to() {
          else . end
        | if .env == {} then del(.env) else . end
      ' "$SETTINGS" > "$tmp"; then
-    rm -f "$tmp"
+    rm -f "$tmp" ${tmp2:+"$tmp2"}
     return 1
   fi
-  cp "$SETTINGS" "$SETTINGS.bak"
-  mv "$tmp" "$SETTINGS"
 
-  # Provider-declared ~/.claude.json flags (e.g. Kimi onboarding flags).
-  local cj
-  cj="$(jq -c --arg n "$name" 'if $n == "claude" then {} else .[$n].claudeJson // {} end' "$PROV")"
-  if [[ "$cj" != "{}" ]]; then
-    local tmp2
-    tmp2="$(mktemp "${CLAUDE_JSON}.XXXXXX")"
+  # Commit ~/.claude.json first (its flags are harmless without the switch),
+  # then settings.json. Backups are forced to mode 600: cp keeps the mode of a
+  # pre-existing .bak, and old ones were created 644.
+  if [[ -n "$tmp2" ]]; then
     if [[ -f "$CLAUDE_JSON" ]]; then
-      jq --argjson add "$cj" '. + $add' "$CLAUDE_JSON" > "$tmp2"
-    else
-      printf '%s\n' "$cj" > "$tmp2"
+      cp "$CLAUDE_JSON" "$CLAUDE_JSON.bak"
+      chmod 600 "$CLAUDE_JSON.bak"
     fi
     mv "$tmp2" "$CLAUDE_JSON"
   fi
+  cp "$SETTINGS" "$SETTINGS.bak"
+  chmod 600 "$SETTINGS.bak"
+  mv "$tmp" "$SETTINGS"
 
   printf 'switched to %s' "$(label_of "$name")"
   [[ -n "$selected_model" ]] && printf ' — model: %s' "$selected_model"
@@ -800,16 +960,19 @@ catalog_switch() {
 
 list_models() {
   local name="$1" query="${2:-}"
-  ensure_credential "$name" || return
   has_catalog "$name" || { echo "provider '$name' has no model catalog" >&2; return 2; }
+  ensure_credential "$name" || return
   fetch_models "$name" || return
   model_rows "$query" | awk -F '\t' '{printf "%-45s %s (%s context)\n", $1, $2, $3}'
 }
 
 list_endpoints() {
   local name="$1" model="$2" query="${3:-}"
-  ensure_credential "$name" || return
   has_catalog "$name" || { echo "provider '$name' has no endpoint catalog" >&2; return 2; }
+  ensure_credential "$name" || return
+  # Only catalog model IDs may be interpolated into the authenticated request URL.
+  fetch_models "$name" || return
+  model_exists "$model" || { echo "unknown model '$model'; run: m models $name '$model'" >&2; return 2; }
   if model_routes_directly "$name" "$model"; then
     echo "$model selects a free model and endpoint automatically; there is no endpoint to pin"
     return 0
@@ -817,46 +980,38 @@ list_endpoints() {
   fetch_endpoints "$name" "$model" || return
   endpoint_rows "$query" | awk -F '\t' '{
     discount = ($5 > 0 ? " (" $5 "% off)" : "")
-    printf "%-24s %-20s $%s/$%s per 1M %s%s\n", $1, $2, $3, $4, $6, discount
+    printf "%-24s %-20s $%s/$%s per 1M %s %s context%s\n", $1, $2, $3, $4, $6, $7, discount
   }'
 }
 
 provider_picker() {
-  local cur sel i n=${#names}
+  local cur sel i n=${#names} first=1 mark selected
+  local -a labels
   cur="$(current)"
   sel=1
-  for i in {1..$n}; do [[ "${names[i]}" == "$cur" ]] && sel=$i; done
-  printf '\e[?25l'
+  for i in {1..$n}; do
+    [[ "${names[i]}" == "$cur" ]] && sel=$i
+    labels+=("$(label_of "${names[i]}")")
+  done
+  picker_enter
   {
-    local first=1 key rest
     while true; do
       (( first )) || printf '\e[%dA' $(( n + 1 ))
       first=0
       for i in {1..$n}; do
-        local mark=" "
+        mark=" "
         [[ "${names[i]}" == "$cur" ]] && mark="o"
-        if (( i == sel )); then
-          printf '\e[K  \e[36m%s %s\e[0m\n' "$mark" "$(label_of "${names[i]}")"
-        else
-          printf '\e[K  %s %s\n' "$mark" "$(label_of "${names[i]}")"
-        fi
+        if (( i == sel )); then picker_line "  ${mark} ${labels[i]}" hl; else picker_line "  ${mark} ${labels[i]}"; fi
       done
-      printf '\e[K\e[2mup/down to select, return to switch, q to quit\e[0m\n'
-      read -sk1 key || { key="q"; }
-      case "$key" in
-        $'\e')
-          rest=""
-          read -sk2 -t 0.05 rest 2>/dev/null || true
-          case "$rest" in
-            '[A') (( sel > 1 )) && (( sel-- )) || true ;;
-            '[B') (( sel < n )) && (( sel++ )) || true ;;
-          esac ;;
-        k) (( sel > 1 )) && (( sel-- )) || true ;;
-        j) (( sel < n )) && (( sel++ )) || true ;;
-        q) break ;;
-        $'\n'|$'\r')
-          printf '\e[?25h'
-          local selected="${names[sel]}"
+      picker_line "up/down to select, return to switch, q to quit" dim
+      read_key
+      case "$REPLY" in
+        up|char:k)   (( sel > 1 )) && (( sel-- )) || true ;;
+        down|char:j) (( sel < n )) && (( sel++ )) || true ;;
+        char:q|esc)  break ;;
+        enter)
+          picker_leave   # nested pickers manage the terminal themselves
+          selected="${names[sel]}"
           if [[ "$selected" == claude ]]; then
             switch_to claude
           elif has_catalog "$selected"; then
@@ -868,7 +1023,7 @@ provider_picker() {
       esac
     done
   } always {
-    printf '\e[?25h'
+    picker_leave
   }
 }
 

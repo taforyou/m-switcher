@@ -1,10 +1,24 @@
 #!/bin/sh
+# Deterministic stand-in for curl used by tests/test_m.zsh.
+#
+# Serves tests/fixtures/*.json by URL and records what m sends:
+#   $M_TEST_ARGV_LOG      every argv (must never contain a key)
+#   $M_TEST_LOG.headers   contents of each -H @file header file
+#   $M_TEST_LOG.requests  "METHOD URL" per request
+#   $M_TEST_LOG           body of the last preset POST
+#   $M_TEST_LOG.preset.<slug>  config of each preset created (served by GET)
+# Endpoints that need auth on the real API (key, presets) return 401 unless the
+# header file carries the test key. M_TEST_FAIL_MODELS=1 makes /models fail.
 set -eu
+
+[ -n "${M_TEST_ARGV_LOG:-}" ] && printf '%s\n' "$*" >> "$M_TEST_ARGV_LOG"
 
 method=GET
 output=
 payload_file=
 url=
+auth=
+test_key="sk-or-test"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -14,12 +28,20 @@ while [ "$#" -gt 0 ]; do
       shift 2
       [ "$option" = "-o" ] && output="$value"
       [ "$option" = "-X" ] && method="$value"
+      if [ "$option" = "-H" ]; then
+        case "$value" in
+          @*)
+            cat "${value#@}" >> "$M_TEST_LOG.headers"
+            auth="$(grep '^Authorization: ' "${value#@}" || true)"
+            ;;
+        esac
+      fi
       ;;
     --data-binary)
       payload_file="${2#@}"
       shift 2
       ;;
-    -s|-S|-sS)
+    -q|-s|-S|-sS)
       shift
       ;;
     *)
@@ -29,33 +51,68 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-[ -n "$output" ]
-[ -n "$url" ]
+[ -n "$output" ] || { echo "mock curl: no -o given" >&2; exit 2; }
+[ -n "$url" ] || { echo "mock curl: no URL given" >&2; exit 2; }
+printf '%s %s\n' "$method" "$url" >> "$M_TEST_LOG.requests"
+
+authorized() {
+  [ "$auth" = "Authorization: Bearer $test_key" ]
+}
+
+unauthorized() {
+  printf '%s\n' '{"error":{"code":401,"message":"User not found."}}' > "$output"
+  status=401
+}
 
 case "$url" in
   */api/v1/key)
-    printf '%s\n' '{"data":{"label":"test-key"}}' > "$output"
-    status=200
+    if authorized; then
+      printf '%s\n' '{"data":{"label":"test-key","is_management_key":false}}' > "$output"
+      status=200
+    else
+      unauthorized
+    fi
     ;;
   *'/api/v1/models?'*)
-    cp "$M_TEST_FIXTURES/models.json" "$output"
-    status=200
+    if [ -n "${M_TEST_FAIL_MODELS:-}" ]; then
+      printf '%s\n' '{"error":{"code":500,"message":"server exploded"}}' > "$output"
+      status=500
+    else
+      cp "$M_TEST_FIXTURES/models.json" "$output"
+      status=200
+    fi
     ;;
   */api/v1/models/z-ai/glm-5.2/endpoints)
     cp "$M_TEST_FIXTURES/endpoints.json" "$output"
     status=200
     ;;
   */api/v1/presets/*/messages)
-    [ "$method" = POST ]
-    cp "$payload_file" "$M_TEST_LOG"
-    slug="${url%/messages}"
-    slug="${slug##*/}"
-    printf '{"data":{"slug":"%s"}}\n' "$slug" > "$output"
-    status=200
+    if ! authorized; then
+      unauthorized
+    elif [ "$method" != POST ] || [ -z "$payload_file" ]; then
+      echo "mock curl: expected a POST with a payload for $url, got $method" >&2
+      exit 1
+    else
+      cp "$payload_file" "$M_TEST_LOG"
+      slug="${url%/messages}"
+      slug="${slug##*/}"
+      jq -c 'del(.messages)' "$payload_file" > "$M_TEST_LOG.preset.$slug"
+      printf '{"data":{"slug":"%s","status":"active"}}\n' "$slug" > "$output"
+      status=200
+    fi
     ;;
   */api/v1/presets/*)
-    printf '%s\n' '{"error":{"message":"not found"}}' > "$output"
-    status=404
+    slug="${url##*/}"
+    if ! authorized; then
+      unauthorized
+    elif [ -f "$M_TEST_LOG.preset.$slug" ]; then
+      printf '{"data":{"slug":"%s","status":"active","designated_version":{"config":%s}}}\n' \
+        "$slug" "$(cat "$M_TEST_LOG.preset.$slug")" > "$output"
+      status=200
+    else
+      printf '%s\n' '{"error":{"code":404,"message":"Resource not found"}}' > "$output"
+      status=404
+    fi
     ;;
   *)
     printf '{"error":{"message":"unexpected test URL: %s"}}\n' "$url" > "$output"
