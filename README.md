@@ -56,7 +56,8 @@ Choose `OpenRouter`, then:
    colored on a green-to-red scale: green is free, then yellow/orange, while
    red marks the most expensive models. **All** is ordered red-to-green,
    **Discounted** by largest percentage reduction, and **Free** by largest
-   context window.
+   context window. Discounted rows put the promotion before the model name,
+   for example `[90%] Qwen: Qwen3 Coder`, so large reductions are easy to scan.
 2. Select a hosting endpoint. The cheapest compatible endpoint is highlighted
    by default, and discounts such as `(77% off)` appear at the end of the row.
 3. Restart `claude`, then use `/status` to verify the base URL is

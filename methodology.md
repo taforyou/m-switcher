@@ -180,8 +180,11 @@ orange to red (at least $30/M combined input/output); keeping fixed thresholds
 makes a model's color stable while searching or changing scope. Selection uses
 a bold row and marker without replacing the price color. All sorts by combined
 input/output price descending, Discounted by promotion percentage descending,
-and Free by context length descending. Match rank remains the primary key while
-a search query is active, so prefix matches still precede substring matches.
+and Free by context length descending. Discounted rows prefix the model name
+with the rounded promotion percentage (for example, `[90%]`) so the primary
+sorting signal remains visible even when the rest of a row is clipped. Match
+rank remains the primary key while a search query is active, so prefix matches
+still precede substring matches.
 
 ### 9. Endpoint selection uses live price and discount data
 

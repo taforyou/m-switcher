@@ -174,8 +174,12 @@ grep -Fq 'Models: All  [Discounted]  Free — 2 matches' "$OUTPUT" \
   || fail "right arrow did not open the discounted scope"
 grep -Fq 'GET https://openrouter.ai/collections/discounted-models' "$TEST_TMP/picker-request.json.requests" \
   || fail "discounted scope did not load OpenRouter's live collection"
-discount_high_line="$(grep -n -F 'Qwen: Qwen3 Coder' "$OUTPUT" | grep -F '90% off' | tail -n 1 | cut -d: -f1)"
-discount_low_line="$(grep -n -F 'Z.ai: GLM 5.2' "$OUTPUT" | grep -F '77% off' | tail -n 1 | cut -d: -f1)"
+grep -Fq '[90%] Qwen: Qwen3 Coder' "$OUTPUT" \
+  || fail "discounted scope did not put the promotion before the model name"
+grep -Fq '[77%] Z.ai: GLM 5.2' "$OUTPUT" \
+  || fail "discounted scope did not round and prefix the promotion"
+discount_high_line="$(grep -n -F '[90%] Qwen: Qwen3 Coder' "$OUTPUT" | tail -n 1 | cut -d: -f1)"
+discount_low_line="$(grep -n -F '[77%] Z.ai: GLM 5.2' "$OUTPUT" | tail -n 1 | cut -d: -f1)"
 (( discount_high_line < discount_low_line )) \
   || fail "Discounted scope was not sorted by largest percentage reduction"
 assert_jq '.env.M_SWITCHER_MODEL == "z-ai/glm-5.2"' "$TEST_TMP/picker-settings.json" \

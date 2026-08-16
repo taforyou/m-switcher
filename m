@@ -412,13 +412,13 @@ model_rows() {
          then (((.context_length / 1000000 * 10) | floor) / 10 | tostring) + "M"
          else (((.context_length // 0) / 1000 | floor | tostring) + "k") end),
         (price_level | tostring),
-        ((if is_free then "free"
+        (if $scope == "discounted" then
+           (((((._m_discount // 0) * 100) + 0.5) | floor) | tostring)
+         else "" end),
+        (if is_free then "free"
          elif input_price == null or output_price == null then "price n/a"
          else "$" + fmt_price(input_price) + "/$" + fmt_price(output_price) + "/M"
          end)
-         + (if $scope == "discounted" then
-              ", " + (((((._m_discount // 0) * 100) + 0.5) | floor) | tostring) + "% off"
-            else "" end))
       ]
     | @tsv
   '
@@ -578,7 +578,7 @@ read_key() {
 
 model_picker() {
   local name="$1" query="${2:-}" sel=1 page_size=10 first=1 active_model scope_index=1 scope=all
-  local row id tail display context price_level price_label mark text i total start index header
+  local row id tail display context price_level discount price_label mark text i total start index header
   local -a rows scope_names=(all discounted free)
   SELECTED_MODEL=""
   active_model="$(current_model 2>/dev/null || true)"
@@ -616,12 +616,17 @@ model_picker() {
           tail="${row#*$'\t'}"
           display="${tail%%$'\t'*}"; tail="${tail#*$'\t'}"
           context="${tail%%$'\t'*}"; tail="${tail#*$'\t'}"
-          price_level="${tail%%$'\t'*}"
-          price_label="${tail##*$'\t'}"
+          price_level="${tail%%$'\t'*}"; tail="${tail#*$'\t'}"
+          discount="${tail%%$'\t'*}"
+          price_label="${tail#*$'\t'}"
           mark=" "
           [[ "$id" == "$active_model" ]] && mark="o"
           (( index == sel )) && [[ "$mark" == " " ]] && mark=">"
-          text="  ${mark} ${display} — ${id} (${context}, ${price_label})"
+          if [[ "$scope" == discounted ]]; then
+            text="  ${mark} [${discount}%] ${display} — ${id} (${context}, ${price_label})"
+          else
+            text="  ${mark} ${display} — ${id} (${context}, ${price_label})"
+          fi
           if (( price_level >= 0 )); then
             if (( index == sel )); then
               picker_line "$text" "cost-hl:$price_level"
