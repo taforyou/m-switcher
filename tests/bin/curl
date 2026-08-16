@@ -1,0 +1,66 @@
+#!/bin/sh
+set -eu
+
+method=GET
+output=
+payload_file=
+url=
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o|-w|-X|-H|--connect-timeout|--max-time)
+      option="$1"
+      value="$2"
+      shift 2
+      [ "$option" = "-o" ] && output="$value"
+      [ "$option" = "-X" ] && method="$value"
+      ;;
+    --data-binary)
+      payload_file="${2#@}"
+      shift 2
+      ;;
+    -s|-S|-sS)
+      shift
+      ;;
+    *)
+      url="$1"
+      shift
+      ;;
+  esac
+done
+
+[ -n "$output" ]
+[ -n "$url" ]
+
+case "$url" in
+  */api/v1/key)
+    printf '%s\n' '{"data":{"label":"test-key"}}' > "$output"
+    status=200
+    ;;
+  *'/api/v1/models?'*)
+    cp "$M_TEST_FIXTURES/models.json" "$output"
+    status=200
+    ;;
+  */api/v1/models/z-ai/glm-5.2/endpoints)
+    cp "$M_TEST_FIXTURES/endpoints.json" "$output"
+    status=200
+    ;;
+  */api/v1/presets/*/messages)
+    [ "$method" = POST ]
+    cp "$payload_file" "$M_TEST_LOG"
+    slug="${url%/messages}"
+    slug="${slug##*/}"
+    printf '{"data":{"slug":"%s"}}\n' "$slug" > "$output"
+    status=200
+    ;;
+  */api/v1/presets/*)
+    printf '%s\n' '{"error":{"message":"not found"}}' > "$output"
+    status=404
+    ;;
+  *)
+    printf '{"error":{"message":"unexpected test URL: %s"}}\n' "$url" > "$output"
+    status=500
+    ;;
+esac
+
+printf '%s' "$status"

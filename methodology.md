@@ -1,9 +1,9 @@
 # DOCS — how `m` works and how to build one like it
 
 This is the methodology behind `m`, written so you can audit it, extend
-it, or rebuild the same idea for another tool. The whole program is ~120
-lines of zsh around `jq`; everything interesting is in the design
-decisions, not the code volume.
+it, or rebuild the same idea for another tool. The core is zsh around
+`jq`; optional live catalogs and endpoint routing add HTTP orchestration
+without changing the strip-then-merge safety model.
 
 ## The problem shape
 
@@ -21,7 +21,7 @@ anything else.
 
 ## Design decisions
 
-### 1. One data file, zero per-provider code
+### 1. One extensible provider data file
 
 All providers live in `~/.claude/providers.json`:
 
@@ -29,9 +29,10 @@ All providers live in `~/.claude/providers.json`:
 { "<name>": { "label": "…", "env": { … }, "claudeJson": { … } } }
 ```
 
-The switcher iterates over whatever keys exist. Adding a provider is a
-data change; the script never hard-codes a provider name. `claude`
-(Anthropic default) is the one reserved name, meaning "no provider env".
+The switcher iterates over whatever keys exist. A basic provider is only
+a data change. `claude` (Anthropic default) is the one reserved name,
+meaning "no provider env". Providers may additionally declare a
+`modelCatalog` with validation, model, endpoint, and preset API URLs.
 
 ### 2. Strip-then-merge, not toggle
 
@@ -104,11 +105,12 @@ filesystem is atomic, so a crash can't leave a half-written config. The
 ### 5. Placeholder guard
 
 The shipped `providers.example.json` wraps unset keys in `<>`. Before
-switching, the tool reads the target's credential
-(`.ANTHROPIC_AUTH_TOKEN // .ANTHROPIC_API_KEY // ""`) and refuses (exit
-3) if it's empty or starts with `<`. This turns "I forgot to paste my
-key" from a confusing auth failure inside Claude Code into an immediate,
-named error at switch time.
+switching, the tool reads the target's first non-empty Anthropic auth
+credential and refuses (exit 3) if it is missing or starts with `<`.
+`m key openrouter` reads without terminal echo and validates against the
+provider's `validationUrl` before atomically saving it. This turns "I
+forgot to paste my key" from a confusing auth failure inside Claude Code
+into an immediate, named error at switch time.
 
 ### 6. Provider hooks beyond `env`: the `claudeJson` block
 
@@ -130,15 +132,82 @@ restore it) is a thin layer over `switch_to`. When stdin/stdout are not
 TTYs, bare `m` degrades to `status`, so the tool stays usable from
 scripts and CI.
 
+### 8. Live model search and router models
+
+A provider with `modelCatalog.url` can expose live choices. OpenRouter's
+catalog URL filters for text-output models advertising `tools`, because
+Claude Code is an agent rather than a plain chat client. The picker keeps
+the server's ranking when no query is present. Typed input is matched
+case-insensitively against the beginning of the model name/ID first, then
+as a substring, so one keystroke such as `Q` immediately narrows the list.
+
+Catalog `specialModels` add router slugs not returned by the filtered
+model endpoint. `openrouter/free` is marked `direct`; it is installed as
+the active model without endpoint selection because the router chooses a
+compatible free model on every request.
+
+### 9. Endpoint selection uses live price and discount data
+
+After a concrete OpenRouter model is selected, `m` requests that model's
+`/endpoints` resource. It removes unhealthy endpoints and endpoints that
+do not advertise `tools`, sorts the remainder by combined prompt and
+completion price, and displays the API's `pricing.discount` as a rounded
+percentage. The first (cheapest) endpoint is highlighted by default.
+
+Endpoint tags—not display names—are load-bearing. A provider such as
+StreamLake may publish a specific tag like `streamlake/fp8`; that exact
+tag is what OpenRouter accepts in `provider.only`.
+
+### 10. Presets bridge Claude Code to exact OpenRouter routing
+
+Claude Code can set a model through environment variables but cannot add
+OpenRouter's `provider` object to every request. `m` therefore creates a
+deterministically named OpenRouter preset containing the concrete model
+and:
+
+```json
+{
+  "provider": {
+    "only": ["streamlake/fp8"],
+    "allow_fallbacks": false
+  }
+}
+```
+
+All Claude Code model-role variables are then set to `@preset/<slug>`.
+Before writing a new preset version, `m` retrieves the deterministic slug
+and reuses it when the configuration already matches. Selection metadata
+uses provider-declared `M_SWITCHER_*` environment keys so `m status` can
+show the human-readable model and endpoint without another state file.
+
+The endpoint resource also supplies `context_length`. Generated preset IDs
+are unknown to Claude Code, so `m` declares that exact value through
+`CLAUDE_CODE_MAX_CONTEXT_TOKENS`. Claude Code applies this variable directly
+to an unrecognized custom ID while retaining proactive compaction. This is
+safer than disabling unknown-model enforcement and waiting for the gateway to
+return a context-length error. Direct routers use their catalog context; the
+variable-model `openrouter/free` router is conservatively declared as 200K.
+
+Claude Code 2.1.233 also emits a separate unknown-model diagnostic. A
+`modelOverrides` value suppresses it, but makes Claude Code identify the route
+with that Anthropic model's built-in context size. m-switcher therefore adds a
+temporary recognition mapping only for exactly representable windows: 200K,
+or at least 1M with a `[1m]` suffix (which Claude Code strips before sending
+the model ID to OpenRouter). It does not mislabel 128K, 262K, or 512K routes to
+silence a cosmetic message. Ownership metadata ensures only m-switcher's own
+mapping is updated or removed; a conflicting user mapping wins.
+
 ## Testing methodology (no risk to your real config)
 
-The file paths are overridable: `M_SETTINGS` and `M_CLAUDE_JSON`. That
+The file paths are overridable: `M_SETTINGS`, `M_CLAUDE_JSON`, and
+`M_PROVIDERS`. That
 makes the whole tool rehearsable against copies:
 
 ```bash
 cp ~/.claude/settings.json /tmp/s.json
 cp ~/.claude.json /tmp/cj.json
 export M_SETTINGS=/tmp/s.json M_CLAUDE_JSON=/tmp/cj.json
+export M_PROVIDERS=/tmp/providers.json
 
 m zai && m status                 # switch on the copy
 jq -S '.env' /tmp/s.json          # inspect exactly what was written
@@ -156,6 +225,17 @@ The invariants to assert after any change to the script:
    nothing.
 4. **Preservation**: everything outside the owned key set (hooks,
    permissions, unrelated `~/.claude.json` content) survives untouched.
+5. **Exact endpoint**: a selected tag is persisted as `provider.only`,
+   with fallbacks disabled, and all Claude Code model roles reference the
+   resulting preset.
+6. **Router bypass**: direct router models such as `openrouter/free`
+   never create or select an endpoint preset.
+7. **Context accuracy**: an endpoint's advertised context length (or a direct
+   router's catalog context) becomes Claude Code's assumed maximum and is
+   removed on the round trip back to Claude.
+8. **Override ownership**: m-switcher removes only the recognition mapping it
+   created and never overwrites a conflicting user-owned `modelOverrides`
+   entry.
 
 The interactive picker can be exercised headlessly with a pseudo-TTY:
 
@@ -163,6 +243,10 @@ The interactive picker can be exercised headlessly with a pseudo-TTY:
 printf '\033[B\r' | script -q /dev/null m   # down-arrow + return
 printf 'q'        | script -q /dev/null m   # quit, no change
 ```
+
+The repository's `tests/test_m.zsh` replaces `curl` with a deterministic
+fixture server and asserts key validation, search, discount ordering,
+preset payloads, free-router bypass, preservation, and round trips.
 
 ## Porting notes
 

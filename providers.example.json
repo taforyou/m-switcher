@@ -32,5 +32,54 @@
       "penguinModeOrgEnabled": true,
       "hasCompletedOnboarding": true
     }
+  },
+  "openrouter": {
+    "label": "OpenRouter",
+    "env": {
+      "ANTHROPIC_AUTH_TOKEN": "<OpenRouter API key>",
+      "ANTHROPIC_API_KEY": "",
+      "ANTHROPIC_BASE_URL": "https://openrouter.ai/api",
+      "ANTHROPIC_MODEL": "~anthropic/claude-sonnet-latest",
+      "ANTHROPIC_DEFAULT_FABLE_MODEL": "~anthropic/claude-fable-latest",
+      "ANTHROPIC_DEFAULT_OPUS_MODEL": "~anthropic/claude-opus-latest",
+      "ANTHROPIC_DEFAULT_SONNET_MODEL": "~anthropic/claude-sonnet-latest",
+      "ANTHROPIC_DEFAULT_HAIKU_MODEL": "~anthropic/claude-haiku-latest",
+      "CLAUDE_CODE_SUBAGENT_MODEL": "~anthropic/claude-sonnet-latest",
+      "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1"
+    },
+    "modelCatalog": {
+      "validationUrl": "https://openrouter.ai/api/v1/key",
+      "url": "https://openrouter.ai/api/v1/models?output_modalities=text&supported_parameters=tools&sort=agentic-high-to-low&limit=1000",
+      "endpointsUrl": "https://openrouter.ai/api/v1/models",
+      "presetsUrl": "https://openrouter.ai/api/v1/presets",
+      "recognitionOverride": "claude-sonnet-4-6",
+      "specialModels": [
+        {
+          "id": "openrouter/free",
+          "name": "OpenRouter: Free Models Router (automatic)",
+          "context_length": 200000,
+          "direct": true
+        }
+      ],
+      "modelEnv": [
+        "ANTHROPIC_MODEL",
+        "ANTHROPIC_DEFAULT_FABLE_MODEL",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+        "CLAUDE_CODE_SUBAGENT_MODEL"
+      ],
+      "selectionEnv": {
+        "model": "M_SWITCHER_MODEL",
+        "endpoint": "M_SWITCHER_ENDPOINT",
+        "endpointName": "M_SWITCHER_ENDPOINT_NAME",
+        "context": "M_SWITCHER_CONTEXT_LENGTH",
+        "overrideKey": "M_SWITCHER_MODEL_OVERRIDE_KEY",
+        "overrideValue": "M_SWITCHER_MODEL_OVERRIDE_VALUE"
+      },
+      "contextEnv": {
+        "max": "CLAUDE_CODE_MAX_CONTEXT_TOKENS"
+      }
+    }
   }
 }

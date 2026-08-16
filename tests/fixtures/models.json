@@ -1,0 +1,22 @@
+{
+  "data": [
+    {
+      "id": "z-ai/glm-5.2",
+      "name": "Z.ai: GLM 5.2",
+      "context_length": 1048576,
+      "supported_parameters": ["tools", "tool_choice"]
+    },
+    {
+      "id": "qwen/qwen3-coder",
+      "name": "Qwen: Qwen3 Coder",
+      "context_length": 262144,
+      "supported_parameters": ["tools", "tool_choice"]
+    },
+    {
+      "id": "openai/gpt-test",
+      "name": "OpenAI: GPT Test",
+      "context_length": 128000,
+      "supported_parameters": ["tools", "tool_choice"]
+    }
+  ]
+}

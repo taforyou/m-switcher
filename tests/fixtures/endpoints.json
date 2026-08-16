@@ -1,0 +1,47 @@
+{
+  "data": {
+    "id": "z-ai/glm-5.2",
+    "name": "Z.ai: GLM 5.2",
+    "endpoints": [
+      {
+        "provider_name": "RegularCloud",
+        "tag": "regularcloud/fp8",
+        "status": 0,
+        "context_length": 524288,
+        "quantization": "fp8",
+        "pricing": {
+          "prompt": "0.0000014",
+          "completion": "0.0000044",
+          "discount": 0
+        },
+        "supported_parameters": ["tools", "tool_choice"]
+      },
+      {
+        "provider_name": "StreamLake",
+        "tag": "streamlake/fp8",
+        "status": 0,
+        "context_length": 1024000,
+        "quantization": "fp8",
+        "pricing": {
+          "prompt": "0.0000003248",
+          "completion": "0.0000010208",
+          "discount": 0.768
+        },
+        "supported_parameters": ["tools", "tool_choice"]
+      },
+      {
+        "provider_name": "NoTools",
+        "tag": "notools",
+        "status": 0,
+        "context_length": 1048576,
+        "quantization": "fp8",
+        "pricing": {
+          "prompt": "0.0000001",
+          "completion": "0.0000001",
+          "discount": 0.9
+        },
+        "supported_parameters": ["temperature"]
+      }
+    ]
+  }
+}
