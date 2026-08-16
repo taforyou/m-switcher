@@ -196,7 +196,8 @@ After a concrete OpenRouter model is selected, `m` requests that model's
 `/endpoints` resource. It removes unhealthy endpoints and endpoints that
 do not advertise `tools`, sorts the remainder by combined prompt and
 completion price, and displays the API's `pricing.discount` as a rounded
-percentage. The first (cheapest) endpoint is highlighted by default.
+percentage badge before the provider name, matching discounted model rows.
+The first (cheapest) endpoint is highlighted by default.
 
 Endpoint tags—not display names—are load-bearing. A provider such as
 StreamLake may publish a specific tag like `streamlake/fp8`; that exact

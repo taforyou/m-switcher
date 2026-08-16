@@ -832,8 +832,11 @@ endpoint_picker() {
           context="${tail%%$'\t'*}"
           mark=" "
           [[ -n "$cheapest_tag" && "$tag" == "$cheapest_tag" ]] && mark="*"
-          text="  ${mark} ${display} [${tag}] \$${input_price}/\$${output_price}/M ${quant} ${context}"
-          (( discount > 0 )) && text+=" (${discount}% off)"
+          if (( discount > 0 )); then
+            text="  ${mark} [${discount}%] ${display} [${tag}] \$${input_price}/\$${output_price}/M ${quant} ${context}"
+          else
+            text="  ${mark} ${display} [${tag}] \$${input_price}/\$${output_price}/M ${quant} ${context}"
+          fi
           if (( index == sel )); then picker_line "$text" hl; else picker_line "$text"; fi
         else
           picker_line ""
@@ -1189,8 +1192,8 @@ list_endpoints() {
   fi
   fetch_endpoints "$name" "$model" || return
   endpoint_rows "$query" | awk -F '\t' '{
-    discount = ($5 > 0 ? " (" $5 "% off)" : "")
-    printf "%-24s %-20s $%s/$%s per 1M %s %s context%s\n", $1, $2, $3, $4, $6, $7, discount
+    provider = ($5 > 0 ? "[" $5 "%] " $2 : $2)
+    printf "%-24s %-26s $%s/$%s per 1M %s %s context\n", $1, provider, $3, $4, $6, $7
   }'
 }
 

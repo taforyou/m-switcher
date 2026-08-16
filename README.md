@@ -15,8 +15,8 @@ OpenRouter's current discount:
 
 ```text
 Hosting endpoints — cheapest is selected by default
-  * StreamLake [streamlake/fp8] $0.3248/$1.0208/M fp8 (77% off)
-    Novita [novita/fp8]         $0.3388/$1.0648/M fp8 (76% off)
+  * [77%] StreamLake [streamlake/fp8] $0.3248/$1.0208/M fp8
+    [76%] Novita [novita/fp8]         $0.3388/$1.0648/M fp8
 ```
 
 `*` marks the cheapest endpoint. Prices and discounts change, so the actual
@@ -62,7 +62,7 @@ Choose `OpenRouter`, then:
    price followed by `→` and the current promotional price. Promoted models
    use this same treatment in **All**.
 2. Select a hosting endpoint. The cheapest compatible endpoint is highlighted
-   by default, and discounts such as `(77% off)` appear at the end of the row.
+   by default, and discounts such as `[77%]` appear before the provider name.
 3. Restart `claude`, then use `/status` to verify the base URL is
    `https://openrouter.ai/api`.
 

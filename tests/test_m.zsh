@@ -189,6 +189,8 @@ grep -Fq 'prices: input / output per 1M tokens' "$OUTPUT" \
   || fail "discounted scope did not label its price order and unit"
 grep -Fq $'\033[9m$1.4/$4.4\033[29m → $0.3248/$1.0208' "$OUTPUT" \
   || fail "discounted scope did not strike the list price and show the promotional price"
+grep -Fq '* [77%] StreamLake [streamlake/fp8]' "$OUTPUT" \
+  || fail "endpoint picker did not prefix the provider name with its discount"
 discount_high_line="$(grep -n -F '[90%] Qwen: Qwen3 Coder' "$OUTPUT" | tail -n 1 | cut -d: -f1)"
 discount_low_line="$(grep -n -F '[77%] Z.ai: GLM 5.2' "$OUTPUT" | tail -n 1 | cut -d: -f1)"
 (( discount_high_line < discount_low_line )) \
@@ -213,7 +215,7 @@ grep -q "unknown model 'anthropic/claude-test:batch'" "$OUTPUT" || fail ":batch 
 run endpoints openrouter z-ai/glm-5.2
 first_endpoint="$(sed -n '1p' "$OUTPUT")"
 [[ "$first_endpoint" == streamlake/fp8* ]] || fail "cheapest endpoint was not first"
-[[ "$first_endpoint" == *'(77% off)'* ]] || fail "discount was not displayed"
+[[ "$first_endpoint" == *'[77%] StreamLake'* ]] || fail "discount was not prefixed to the provider name"
 [[ "$first_endpoint" == *'1M context'* ]] || fail "endpoint context was not displayed"
 if grep -q '^notools' "$OUTPUT"; then fail "endpoint without tools was listed"; fi
 if grep -q '^together' "$OUTPUT"; then fail "unhealthy endpoint was listed"; fi
