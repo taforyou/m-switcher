@@ -182,9 +182,11 @@ a bold row and marker without replacing the price color. All sorts by combined
 input/output price descending, Discounted by promotion percentage descending,
 and Free by context length descending. Discounted rows prefix the model name
 with the rounded promotion percentage (for example, `[90%]`) so the primary
-sorting signal remains visible even when the rest of a row is clipped. Match
-rank remains the primary key while a search query is active, so prefix matches
-still precede substring matches.
+sorting signal remains visible even when the rest of a row is clipped. Because
+the Models API price already includes the promotion, the picker divides it by
+`1 - discount` to reconstruct the input/output list price, strikes that price,
+and follows it with the current price. Match rank remains the primary key while
+a search query is active, so prefix matches still precede substring matches.
 
 ### 9. Endpoint selection uses live price and discount data
 

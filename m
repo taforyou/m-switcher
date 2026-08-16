@@ -415,9 +415,16 @@ model_rows() {
         (if $scope == "discounted" then
            (((((._m_discount // 0) * 100) + 0.5) | floor) | tostring)
          else "" end),
+        (if $scope == "discounted"
+            and input_price != null and output_price != null
+            and (._m_discount // 0) > 0 and (._m_discount // 0) < 1 then
+           "$" + fmt_price(input_price / (1 - ._m_discount))
+           + "/$" + fmt_price(output_price / (1 - ._m_discount))
+         else "" end),
         (if is_free then "free"
          elif input_price == null or output_price == null then "price n/a"
-         else "$" + fmt_price(input_price) + "/$" + fmt_price(output_price) + "/M"
+         else "$" + fmt_price(input_price) + "/$" + fmt_price(output_price)
+              + (if $scope == "discounted" then "" else "/M" end)
          end)
       ]
     | @tsv
@@ -518,11 +525,22 @@ picker_leave() {
 }
 
 # Prints one picker line clipped to the terminal width. Cost styles preserve
-# the model's green-to-red price signal even on the selected (bold) row.
+# the model's green-to-red price signal even on the selected (bold) row. An
+# optional character range is rendered with ANSI strikethrough after clipping,
+# so escape bytes never count against the visible width.
 picker_line() {
-  local text="$1" style="${2:-}" level color
+  local text="$1" style="${2:-}" strike_start="${3:-0}" strike_length="${4:-0}"
+  local level color strike_end before struck after
   local -a cost_colors=(46 82 118 226 214 208 196)
   text="${text[1,M_PICKER_WIDTH]}"
+  if (( strike_start > 0 && strike_start <= ${#text} && strike_length > 0 )); then
+    strike_end=$(( strike_start + strike_length - 1 ))
+    (( strike_end > ${#text} )) && strike_end=${#text}
+    (( strike_start > 1 )) && before="${text[1,strike_start - 1]}" || before=""
+    struck="${text[strike_start,strike_end]}"
+    (( strike_end < ${#text} )) && after="${text[strike_end + 1,-1]}" || after=""
+    text="${before}"$'\e[9m'"${struck}"$'\e[29m'"${after}"
+  fi
   case "$style" in
     hl)  printf '\e[K\e[36m%s\e[0m\n' "$text" ;;
     dim) printf '\e[K\e[2m%s\e[0m\n' "$text" ;;
@@ -578,7 +596,8 @@ read_key() {
 
 model_picker() {
   local name="$1" query="${2:-}" sel=1 page_size=10 first=1 active_model scope_index=1 scope=all
-  local row id tail display context price_level discount price_label mark text i total start index header
+  local row id tail display context price_level discount original_price price_label mark text
+  local i total start index header price_prefix strike_start strike_length
   local -a rows scope_names=(all discounted free)
   SELECTED_MODEL=""
   active_model="$(current_model 2>/dev/null || true)"
@@ -607,7 +626,11 @@ model_picker() {
         header+=" — $total matches"
       fi
       picker_line "$header"
-      picker_line "Search: $query"
+      if [[ "$scope" == discounted ]]; then
+        picker_line "Search: $query · prices: input / output per 1M tokens"
+      else
+        picker_line "Search: $query"
+      fi
       for i in {1..$page_size}; do
         index=$(( start + i ))
         if (( index <= total )); then
@@ -617,26 +640,36 @@ model_picker() {
           display="${tail%%$'\t'*}"; tail="${tail#*$'\t'}"
           context="${tail%%$'\t'*}"; tail="${tail#*$'\t'}"
           price_level="${tail%%$'\t'*}"; tail="${tail#*$'\t'}"
-          discount="${tail%%$'\t'*}"
+          discount="${tail%%$'\t'*}"; tail="${tail#*$'\t'}"
+          original_price="${tail%%$'\t'*}"
           price_label="${tail#*$'\t'}"
           mark=" "
           [[ "$id" == "$active_model" ]] && mark="o"
           (( index == sel )) && [[ "$mark" == " " ]] && mark=">"
+          strike_start=0
+          strike_length=0
           if [[ "$scope" == discounted ]]; then
-            text="  ${mark} [${discount}%] ${display} — ${id} (${context}, ${price_label})"
+            price_prefix="  ${mark} [${discount}%] ${display} — ${id} (${context}, "
+            if [[ -n "$original_price" ]]; then
+              text="${price_prefix}${original_price} → ${price_label})"
+              strike_start=$(( ${#price_prefix} + 1 ))
+              strike_length=${#original_price}
+            else
+              text="${price_prefix}${price_label})"
+            fi
           else
             text="  ${mark} ${display} — ${id} (${context}, ${price_label})"
           fi
           if (( price_level >= 0 )); then
             if (( index == sel )); then
-              picker_line "$text" "cost-hl:$price_level"
+              picker_line "$text" "cost-hl:$price_level" "$strike_start" "$strike_length"
             else
-              picker_line "$text" "cost:$price_level"
+              picker_line "$text" "cost:$price_level" "$strike_start" "$strike_length"
             fi
           elif (( index == sel )); then
-            picker_line "$text" hl
+            picker_line "$text" hl "$strike_start" "$strike_length"
           else
-            picker_line "$text"
+            picker_line "$text" "" "$strike_start" "$strike_length"
           fi
         else
           picker_line ""

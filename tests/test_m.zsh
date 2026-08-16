@@ -178,6 +178,10 @@ grep -Fq '[90%] Qwen: Qwen3 Coder' "$OUTPUT" \
   || fail "discounted scope did not put the promotion before the model name"
 grep -Fq '[77%] Z.ai: GLM 5.2' "$OUTPUT" \
   || fail "discounted scope did not round and prefix the promotion"
+grep -Fq 'prices: input / output per 1M tokens' "$OUTPUT" \
+  || fail "discounted scope did not label its price order and unit"
+grep -Fq $'\033[9m$1.4/$4.4\033[29m → $0.3248/$1.0208' "$OUTPUT" \
+  || fail "discounted scope did not strike the list price and show the promotional price"
 discount_high_line="$(grep -n -F '[90%] Qwen: Qwen3 Coder' "$OUTPUT" | tail -n 1 | cut -d: -f1)"
 discount_low_line="$(grep -n -F '[77%] Z.ai: GLM 5.2' "$OUTPUT" | tail -n 1 | cut -d: -f1)"
 (( discount_high_line < discount_low_line )) \
