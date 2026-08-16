@@ -170,9 +170,10 @@ The model picker keeps one search query across three left/right scopes: All,
 Discounted, and Free. Free entries are identified by the documented zero
 prompt/completion/request prices, the `:free` variant suffix, or the direct
 free router. The Models API does not expose provider promotion metadata, so
-the discounted scope is populated lazily from OpenRouter's live discounted
-collection and intersected with the tool-capable API catalog. A collection
-failure disables only that scope.
+promotion metadata is loaded when the picker opens from OpenRouter's live
+discounted collection and intersected with the tool-capable API catalog. This
+decorates promoted rows in All and populates Discounted. A collection failure
+leaves All undecorated and disables only the Discounted scope.
 
 Model rows show the catalog's cheapest input/output price per million tokens.
 A fixed seven-step ANSI-256 scale runs from green (free) through yellow and
@@ -185,8 +186,9 @@ with the rounded promotion percentage (for example, `[90%]`) so the primary
 sorting signal remains visible even when the rest of a row is clipped. Because
 the Models API price already includes the promotion, the picker divides it by
 `1 - discount` to reconstruct the input/output list price, strikes that price,
-and follows it with the current price. Match rank remains the primary key while
-a search query is active, so prefix matches still precede substring matches.
+and follows it with the current price. The same promotion treatment is used for
+discounted entries in All. Match rank remains the primary key while a search
+query is active, so prefix matches still precede substring matches.
 
 ### 9. Endpoint selection uses live price and discount data
 

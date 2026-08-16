@@ -159,6 +159,13 @@ grep -Fq 'Models: [All]  Discounted  Free' "$OUTPUT" || fail "model picker did n
 grep -Fq '38;5;46m' "$OUTPUT" || fail "free model was not green"
 grep -Fq '38;5;196m' "$OUTPUT" || fail "expensive model was not red"
 grep -Fq '$5/$25/M' "$OUTPUT" || fail "model picker did not show live per-token prices"
+all_discount_row="$(grep -m1 -F 'Z.ai: GLM 5.2' "$OUTPUT")"
+[[ "$all_discount_row" == *'[77%] Z.ai: GLM 5.2'* ]] \
+  || fail "All scope did not prefix a promoted model with its discount"
+[[ "$all_discount_row" == *$'\033[9m$1.4/$4.4\033[29m → $0.3248/$1.0208'* ]] \
+  || fail "All scope did not show the struck list price and promotional price"
+grep -Fq 'GET https://openrouter.ai/collections/discounted-models' "$TEST_TMP/picker-request.json.requests" \
+  || fail "model picker did not load promotions for the All scope"
 all_red_line="$(grep -n -m1 -F 'OpenAI: GPT Test' "$OUTPUT" | cut -d: -f1)"
 all_mid_line="$(grep -n -m1 -F 'Z.ai: GLM 5.2' "$OUTPUT" | cut -d: -f1)"
 all_cheap_line="$(grep -n -m1 -F 'Qwen: Qwen3 Coder' "$OUTPUT" | cut -d: -f1)"
@@ -173,7 +180,7 @@ run_picker '\033[C\033[B\r\r'
 grep -Fq 'Models: All  [Discounted]  Free — 2 matches' "$OUTPUT" \
   || fail "right arrow did not open the discounted scope"
 grep -Fq 'GET https://openrouter.ai/collections/discounted-models' "$TEST_TMP/picker-request.json.requests" \
-  || fail "discounted scope did not load OpenRouter's live collection"
+  || fail "model picker did not load OpenRouter's live discount collection"
 grep -Fq '[90%] Qwen: Qwen3 Coder' "$OUTPUT" \
   || fail "discounted scope did not put the promotion before the model name"
 grep -Fq '[77%] Z.ai: GLM 5.2' "$OUTPUT" \

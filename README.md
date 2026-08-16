@@ -59,7 +59,8 @@ Choose `OpenRouter`, then:
    context window. Discounted rows put the promotion before the model name,
    for example `[90%] Qwen: Qwen3 Coder`, so large reductions are easy to scan.
    They show input/output prices per million tokens as the struck-through list
-   price followed by `→` and the current promotional price.
+   price followed by `→` and the current promotional price. Promoted models
+   use this same treatment in **All**.
 2. Select a hosting endpoint. The cheapest compatible endpoint is highlighted
    by default, and discounts such as `(77% off)` appear at the end of the row.
 3. Restart `claude`, then use `/status` to verify the base URL is
@@ -103,12 +104,14 @@ variable availability/performance, and may use providers that log prompts; see
 [OpenRouter's free-router documentation](https://openrouter.ai/docs/guides/routing/routers/free-router).
 
 The **Free** scope also includes concrete `:free` variants and catalog entries
-whose input, output, and request prices are all zero. The **Discounted** scope
-is loaded on demand from OpenRouter's live
+whose input, output, and request prices are all zero. Promotion metadata for
+the **All** and **Discounted** scopes is loaded when the picker opens from
+OpenRouter's live
 [discounted-model collection](https://openrouter.ai/collections/discounted-models),
 because the Models API publishes the discounted price but not the promotion
 flag. If that collection cannot be reached or its format changes, the picker
-keeps All and Free usable and labels only the Discounted scope unavailable.
+keeps All and Free usable (without promotion decorations in All) and labels
+only the Discounted scope unavailable.
 
 ## How exact endpoint selection works
 

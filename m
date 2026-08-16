@@ -349,6 +349,9 @@ model_rows() {
     def input_price: number(.pricing.prompt);
     def output_price: number(.pricing.completion);
     def request_price: number(.pricing.request) // 0;
+    def show_discount:
+      ($scope == "all" or $scope == "discounted")
+      and ._m_discounted == true;
     def is_free:
       .id == "openrouter/free"
       or (.id | endswith(":free"))
@@ -412,10 +415,10 @@ model_rows() {
          then (((.context_length / 1000000 * 10) | floor) / 10 | tostring) + "M"
          else (((.context_length // 0) / 1000 | floor | tostring) + "k") end),
         (price_level | tostring),
-        (if $scope == "discounted" then
+        (if show_discount then
            (((((._m_discount // 0) * 100) + 0.5) | floor) | tostring)
          else "" end),
-        (if $scope == "discounted"
+        (if show_discount
             and input_price != null and output_price != null
             and (._m_discount // 0) > 0 and (._m_discount // 0) < 1 then
            "$" + fmt_price(input_price / (1 - ._m_discount))
@@ -424,7 +427,7 @@ model_rows() {
         (if is_free then "free"
          elif input_price == null or output_price == null then "price n/a"
          else "$" + fmt_price(input_price) + "/$" + fmt_price(output_price)
-              + (if $scope == "discounted" then "" else "/M" end)
+              + (if show_discount then "" else "/M" end)
          end)
       ]
     | @tsv
@@ -433,9 +436,10 @@ model_rows() {
 
 # OpenRouter's Models API exposes the cheapest live price but not whether that
 # price is promotional. Its discounted collection is the authoritative live
-# list, so load it only if the user enters the Discounted picker scope. The
-# collection is a Next.js stream containing escaped structured model records;
-# exact slug fields are extracted and then intersected with the API catalog.
+# list, so load it when the picker opens to decorate promoted rows in both All
+# and Discounted. The collection is a Next.js stream containing escaped
+# structured model records; exact slug fields are extracted and then
+# intersected with the API catalog.
 fetch_discounted_models() {
   local name="$1" url discounts
   [[ "$DISCOUNT_CATALOG_STATUS" == loaded ]] && return 0
@@ -601,6 +605,10 @@ model_picker() {
   local -a rows scope_names=(all discounted free)
   SELECTED_MODEL=""
   active_model="$(current_model 2>/dev/null || true)"
+  # All shows the same promotion treatment as Discounted. A collection failure
+  # must not prevent the picker from opening; only the Discounted scope becomes
+  # unavailable, while All continues without promotion decorations.
+  fetch_discounted_models "$name" || true
   picker_enter
   {
     while true; do
@@ -626,7 +634,7 @@ model_picker() {
         header+=" — $total matches"
       fi
       picker_line "$header"
-      if [[ "$scope" == discounted ]]; then
+      if [[ "$scope" == all || "$scope" == discounted ]]; then
         picker_line "Search: $query · prices: input / output per 1M tokens"
       else
         picker_line "Search: $query"
@@ -648,7 +656,7 @@ model_picker() {
           (( index == sel )) && [[ "$mark" == " " ]] && mark=">"
           strike_start=0
           strike_length=0
-          if [[ "$scope" == discounted ]]; then
+          if [[ -n "$discount" ]]; then
             price_prefix="  ${mark} [${discount}%] ${display} — ${id} (${context}, "
             if [[ -n "$original_price" ]]; then
               text="${price_prefix}${original_price} → ${price_label})"
