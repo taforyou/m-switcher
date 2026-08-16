@@ -49,7 +49,12 @@ m
 Choose `OpenRouter`, then:
 
 1. Type to search models. Typing `Q` immediately lists Qwen and other matching
-   `Q` model IDs/names. Backspace edits the query; arrows move; return selects.
+   `Q` model IDs/names. Use left/right (or Tab) to switch between **All**,
+   **Discounted**, and **Free** scopes. Backspace edits the query; up/down move;
+   return selects.
+   Each row includes the live input/output price per million tokens and is
+   colored on a green-to-red scale: green is free, then yellow/orange, while
+   red marks the most expensive models.
 2. Select a hosting endpoint. The cheapest compatible endpoint is highlighted
    by default, and discounts such as `(77% off)` appear at the end of the row.
 3. Restart `claude`, then use `/status` to verify the base URL is
@@ -91,6 +96,14 @@ currently available free model for each request and filters that pool for
 required capabilities such as tool calling. Free routes have lower rate limits,
 variable availability/performance, and may use providers that log prompts; see
 [OpenRouter's free-router documentation](https://openrouter.ai/docs/guides/routing/routers/free-router).
+
+The **Free** scope also includes concrete `:free` variants and catalog entries
+whose input, output, and request prices are all zero. The **Discounted** scope
+is loaded on demand from OpenRouter's live
+[discounted-model collection](https://openrouter.ai/collections/discounted-models),
+because the Models API publishes the discounted price but not the promotion
+flag. If that collection cannot be reached or its format changes, the picker
+keeps All and Free usable and labels only the Discounted scope unavailable.
 
 ## How exact endpoint selection works
 
@@ -227,8 +240,8 @@ prefix search, `:batch` exclusion, discount ordering, exact endpoint pinning
 including sibling narrowing and preset reuse, plain-provider switching and the
 `~/.claude.json` merge, file modes, symlinks, `install.sh`, settings
 preservation, status, the round trip back to Anthropic, and that no key ever
-reaches a `curl`/`jq` command line. The interactive pickers are not covered;
-drive them under a pty (`expect`) when changing them.
+reaches a `curl`/`jq` command line. A pseudo-TTY test also covers picker scope
+navigation, discounted/free filtering, and green/red price rendering.
 
 ## Troubleshooting
 

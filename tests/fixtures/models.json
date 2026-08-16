@@ -4,24 +4,35 @@
       "id": "z-ai/glm-5.2",
       "name": "Z.ai: GLM 5.2",
       "context_length": 1048576,
+      "pricing": {"prompt": "0.0000003248", "completion": "0.0000010208"},
       "supported_parameters": ["tools", "tool_choice"]
     },
     {
       "id": "anthropic/claude-test:batch",
       "name": "Anthropic: Claude Test (batch)",
       "context_length": 200000,
+      "pricing": {"prompt": "0.000005", "completion": "0.000025"},
       "supported_parameters": ["tools", "tool_choice"]
     },
     {
       "id": "qwen/qwen3-coder",
       "name": "Qwen: Qwen3 Coder",
       "context_length": 262144,
+      "pricing": {"prompt": "0.0000005", "completion": "0.000002"},
       "supported_parameters": ["tools", "tool_choice"]
     },
     {
       "id": "openai/gpt-test",
       "name": "OpenAI: GPT Test",
       "context_length": 128000,
+      "pricing": {"prompt": "0.000005", "completion": "0.000025"},
+      "supported_parameters": ["tools", "tool_choice"]
+    },
+    {
+      "id": "google/gemma-test:free",
+      "name": "Google: Gemma Test (free)",
+      "context_length": 131072,
+      "pricing": {"prompt": "0", "completion": "0", "request": "0"},
       "supported_parameters": ["tools", "tool_choice"]
     }
   ]

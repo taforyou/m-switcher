@@ -127,6 +127,53 @@ if grep -q 'z-ai/glm-5.2' "$OUTPUT"; then fail "Q search included an unrelated m
 run models openrouter free
 grep -q '^openrouter/free' "$OUTPUT" || fail "automatic free router was not listed"
 
+# The model picker exposes All/Discounted/Free scopes, loads promotions only
+# when that scope is opened, and preserves price color while moving selection.
+run_picker() {
+  local keys="$1"
+  local picker_settings="$TEST_TMP/picker-settings.json"
+  local picker_claude_json="$TEST_TMP/picker-claude.json"
+  local picker_log="$TEST_TMP/picker-request.json"
+  local -a script_args
+  printf '{}\n' > "$picker_settings"
+  printf '{}\n' > "$picker_claude_json"
+  if [[ "$(uname -s)" == Darwin ]]; then
+    script_args=(-q -e /dev/null "$ROOT/m" openrouter)
+  else
+    # util-linux script takes the child command through -c.
+    script_args=(-q -e -c '"$M_TEST_PICKER_COMMAND" openrouter' /dev/null)
+  fi
+  if ! printf '%b' "$keys" | env \
+      M_SETTINGS="$picker_settings" \
+      M_CLAUDE_JSON="$picker_claude_json" \
+      M_TEST_LOG="$picker_log" \
+      M_TEST_ARGV_LOG="$ARGV_LOG" \
+      M_TEST_PICKER_COMMAND="$ROOT/m" \
+      script "${script_args[@]}" > "$OUTPUT" 2>&1; then
+    fail "interactive model picker failed: $(cat "$OUTPUT")"
+  fi
+}
+
+run_picker '\r'
+grep -Fq 'Models: [All]  Discounted  Free' "$OUTPUT" || fail "model picker did not show all three scopes"
+grep -Fq '38;5;46m' "$OUTPUT" || fail "free model was not green"
+grep -Fq '38;5;196m' "$OUTPUT" || fail "expensive model was not red"
+grep -Fq '$5/$25/M' "$OUTPUT" || fail "model picker did not show live per-token prices"
+
+run_picker '\033[C\r\r'
+grep -Fq 'Models: All  [Discounted]  Free — 1 match' "$OUTPUT" \
+  || fail "right arrow did not open the discounted scope"
+grep -Fq 'GET https://openrouter.ai/collections/discounted-models' "$TEST_TMP/picker-request.json.requests" \
+  || fail "discounted scope did not load OpenRouter's live collection"
+assert_jq '.env.M_SWITCHER_MODEL == "z-ai/glm-5.2"' "$TEST_TMP/picker-settings.json" \
+  "discounted scope did not select its matching model"
+
+run_picker '\033[C\033[C\r'
+grep -Fq 'Models: All  Discounted  [Free] — 2 matches' "$OUTPUT" \
+  || fail "right arrow did not open the free scope"
+assert_jq '.env.M_SWITCHER_MODEL == "openrouter/free"' "$TEST_TMP/picker-settings.json" \
+  "free scope did not select the automatic free router"
+
 # Batch-API variants are hidden from the catalog and cannot be pinned.
 run models openrouter batch
 if grep -q ':batch' "$OUTPUT"; then fail ":batch variant was listed"; fi

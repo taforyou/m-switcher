@@ -82,6 +82,11 @@ case "$url" in
       status=200
     fi
     ;;
+  */collections/discounted-models)
+    [ -z "$auth" ] || { echo "mock curl: credential sent to public collection" >&2; exit 1; }
+    cp "$M_TEST_FIXTURES/discounted-models.html" "$output"
+    status=200
+    ;;
   */api/v1/models/z-ai/glm-5.2/endpoints)
     cp "$M_TEST_FIXTURES/endpoints.json" "$output"
     status=200

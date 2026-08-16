@@ -50,6 +50,7 @@
     "modelCatalog": {
       "validationUrl": "https://openrouter.ai/api/v1/key",
       "url": "https://openrouter.ai/api/v1/models?output_modalities=text&supported_parameters=tools&sort=agentic-high-to-low&limit=1000",
+      "discountedModelsUrl": "https://openrouter.ai/collections/discounted-models",
       "endpointsUrl": "https://openrouter.ai/api/v1/models",
       "presetsUrl": "https://openrouter.ai/api/v1/presets",
       "recognitionOverride": "claude-sonnet-4-6",
@@ -59,6 +60,7 @@
           "id": "openrouter/free",
           "name": "OpenRouter: Free Models Router (automatic)",
           "context_length": 200000,
+          "pricing": {"prompt": "0", "completion": "0"},
           "direct": true
         }
       ],

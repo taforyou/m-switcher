@@ -43,6 +43,8 @@ HTTP_DATA=""
 HTTP_STATUS=""
 MODEL_DATA=""
 ENDPOINT_DATA=""
+DISCOUNT_CATALOG_STATUS="unloaded"
+DISCOUNT_CATALOG_ERROR=""
 SELECTED_MODEL=""
 SELECTED_ENDPOINT=""
 SELECTED_ENDPOINT_NAME=""
@@ -180,8 +182,9 @@ print_status() {
   printf '\n'
 }
 
-# Makes an authenticated JSON request without putting the API key in curl's
-# process arguments. Results are returned through HTTP_STATUS and HTTP_DATA.
+# Makes an HTTP request, adding bearer authentication when a token is given
+# without putting that token in curl's process arguments. Results are returned
+# through HTTP_STATUS and HTTP_DATA.
 http_request() {
   local method="$1" url="$2" token="$3" payload="${4:-}"
   local prefix="${TMPDIR:-/tmp}/m-switcher-http"
@@ -197,12 +200,13 @@ http_request() {
     M_TMP_FILES+=("$payload_file")
   fi
   {
-    printf 'Authorization: Bearer %s\n' "$token" > "$header_file"
+    [[ -n "$token" ]] && printf 'Authorization: Bearer %s\n' "$token" > "$header_file"
     [[ -n "$payload_file" ]] && printf '%s' "$payload" > "$payload_file"
     # -q must come first: it stops curl from reading ~/.curlrc, whose
     # verbose/trace options would print the Authorization header.
     args=(-q -sS --connect-timeout 10 --max-time 30 -o "$response_file" -w '%{http_code}'
-          -X "$method" -H "@$header_file")
+          -X "$method")
+    [[ -n "$token" ]] && args+=(-H "@$header_file")
     if [[ -n "$payload_file" ]]; then
       args+=(-H 'Content-Type: application/json' --data-binary "@$payload_file")
     fi
@@ -332,13 +336,39 @@ fetch_models() {
         | select(($exclude | any(. as $s | $id | endswith($s))) | not)
       ])
   ')"
+  DISCOUNT_CATALOG_STATUS="unloaded"
+  DISCOUNT_CATALOG_ERROR=""
 }
 
 model_rows() {
-  local query="${1:l}"
-  printf '%s' "$MODEL_DATA" | jq -r --arg q "$query" '
+  local query="${1:l}" scope="${2:-all}"
+  printf '%s' "$MODEL_DATA" | jq -r --arg q "$query" --arg scope "$scope" '
     def clean: gsub("[[:cntrl:]]"; " ");
     def lower: ascii_downcase;
+    def number($value): try ($value | tonumber) catch null;
+    def input_price: number(.pricing.prompt);
+    def output_price: number(.pricing.completion);
+    def request_price: number(.pricing.request) // 0;
+    def is_free:
+      .id == "openrouter/free"
+      or (.id | endswith(":free"))
+      or (input_price == 0 and output_price == 0 and request_price == 0);
+    def price_level:
+      if is_free then 0
+      elif input_price == null or output_price == null then -1
+      else ((input_price + output_price) * 1000000) as $per_million
+      | if $per_million <= 1 then 1
+        elif $per_million <= 3 then 2
+        elif $per_million <= 8 then 3
+        elif $per_million <= 20 then 4
+        elif $per_million < 30 then 5
+        else 6 end
+      end;
+    def fmt_price($value):
+      if $value == null then "?"
+      else ($value * 1000000) as $per_million
+      | (((($per_million * 10000) | round) / 10000) | tostring)
+      end;
     def rank($q):
       if $q == "" then 0
       elif ((.id // "" | lower) | startswith($q))
@@ -348,6 +378,11 @@ model_rows() {
       else 2 end;
     .data
     | map(. + {"_m_rank": rank($q)})
+    | map(select(
+        $scope == "all"
+        or ($scope == "discounted" and ._m_discounted == true)
+        or ($scope == "free" and is_free)
+      ))
     | map(select(._m_rank < 2))
     | (if $q == "" then . else sort_by(._m_rank) end)
     | .[]
@@ -356,10 +391,54 @@ model_rows() {
         ((.name // .id) | clean),
         (if (.context_length // 0) >= 1000000
          then (((.context_length / 1000000 * 10) | floor) / 10 | tostring) + "M"
-         else (((.context_length // 0) / 1000 | floor | tostring) + "k") end)
+         else (((.context_length // 0) / 1000 | floor | tostring) + "k") end),
+        (price_level | tostring),
+        (if is_free then "free"
+         elif input_price == null or output_price == null then "price n/a"
+         else "$" + fmt_price(input_price) + "/$" + fmt_price(output_price) + "/M"
+         end)
       ]
     | @tsv
   '
+}
+
+# OpenRouter's Models API exposes the cheapest live price but not whether that
+# price is promotional. Its discounted collection is the authoritative live
+# list, so load it only if the user enters the Discounted picker scope. The
+# collection is a Next.js stream containing escaped structured model records;
+# exact slug fields are extracted and then intersected with the API catalog.
+fetch_discounted_models() {
+  local name="$1" url ids
+  [[ "$DISCOUNT_CATALOG_STATUS" == loaded ]] && return 0
+  [[ "$DISCOUNT_CATALOG_STATUS" == unavailable ]] && return 1
+
+  url="$(jq -r --arg n "$name" '.[$n].modelCatalog.discountedModelsUrl // ""' "$PROV")"
+  if [[ -z "$url" ]]; then
+    DISCOUNT_CATALOG_STATUS="unavailable"
+    DISCOUNT_CATALOG_ERROR="discounted scope is not configured"
+    return 1
+  fi
+  # The collection is a public web page. Never send an API credential to a
+  # non-API URL, even though it shares OpenRouter's origin.
+  if ! http_request GET "$url" "" || ! http_succeeded; then
+    DISCOUNT_CATALOG_STATUS="unavailable"
+    DISCOUNT_CATALOG_ERROR="discounted list unavailable"
+    return 1
+  fi
+  ids="$(printf '%s' "$HTTP_DATA" | jq -Rsc '
+    [scan("\\{\\\\\"model\\\\\":\\{\\\\\"slug\\\\\":\\\\\"([^\\\\\"]+)\\\\\"")[0]]
+    | unique
+  ' 2>/dev/null || true)"
+  if [[ -z "$ids" ]] || ! printf '%s' "$ids" | jq -e 'type == "array" and length > 0' >/dev/null 2>&1; then
+    DISCOUNT_CATALOG_STATUS="unavailable"
+    DISCOUNT_CATALOG_ERROR="discounted list format changed"
+    return 1
+  fi
+  MODEL_DATA="$(printf '%s' "$MODEL_DATA" | jq -c --argjson ids "$ids" '
+    .data |= map(.id as $id | . + {"_m_discounted": ($ids | index($id) != null)})
+  ')"
+  DISCOUNT_CATALOG_STATUS="loaded"
+  DISCOUNT_CATALOG_ERROR=""
 }
 
 model_exists() {
@@ -409,21 +488,30 @@ picker_leave() {
   return 0
 }
 
-# Prints one picker line clipped to the terminal width. $2: hl | dim | (plain).
+# Prints one picker line clipped to the terminal width. Cost styles preserve
+# the model's green-to-red price signal even on the selected (bold) row.
 picker_line() {
-  local text="$1" style="${2:-}"
+  local text="$1" style="${2:-}" level color
+  local -a cost_colors=(46 82 118 226 214 208 196)
   text="${text[1,M_PICKER_WIDTH]}"
   case "$style" in
     hl)  printf '\e[K\e[36m%s\e[0m\n' "$text" ;;
     dim) printf '\e[K\e[2m%s\e[0m\n' "$text" ;;
+    cost:<->)
+      level="${style#cost:}"
+      color="${cost_colors[level + 1]}"
+      printf '\e[K\e[38;5;%sm%s\e[0m\n' "$color" "$text" ;;
+    cost-hl:<->)
+      level="${style#cost-hl:}"
+      color="${cost_colors[level + 1]}"
+      printf '\e[K\e[1;38;5;%sm%s\e[0m\n' "$color" "$text" ;;
     *)   printf '\e[K%s\n' "$text" ;;
   esac
 }
 
-# Reads one keypress into REPLY: up, down, enter, backspace, esc (a lone
+# Reads one keypress into REPLY: directions, tab, enter, backspace, esc (a lone
 # Escape or EOF), char:<c> for a printable character, or other for any complete
-# escape sequence m does not use (Left, Home, F-keys, Alt+key, ...), which the
-# pickers ignore instead of aborting.
+# escape sequence m does not use, which the pickers ignore instead of aborting.
 read_key() {
   local key rest ch
   REPLY=other
@@ -447,8 +535,11 @@ read_key() {
         '')        REPLY=esc ;;
         '[A'|'OA') REPLY=up ;;
         '[B'|'OB') REPLY=down ;;
+        '[C'|'OC') REPLY=right ;;
+        '[D'|'OD') REPLY=left ;;
         *)         REPLY=other ;;
       esac ;;
+    $'\t')          REPLY=tab ;;
     $'\x7f'|$'\b') REPLY=backspace ;;
     $'\n'|$'\r')   REPLY=enter ;;
     *) [[ "$key" == [[:print:]] ]] && REPLY="char:$key" ;;
@@ -457,15 +548,15 @@ read_key() {
 }
 
 model_picker() {
-  local query="${1:-}" sel=1 page_size=10 first=1 active_model
-  local row id tail display context mark text i total start index
-  local -a rows
+  local name="$1" query="${2:-}" sel=1 page_size=10 first=1 active_model scope_index=1 scope=all
+  local row id tail display context price_level price_label mark text i total start index header
+  local -a rows scope_names=(all discounted free)
   SELECTED_MODEL=""
   active_model="$(current_model 2>/dev/null || true)"
   picker_enter
   {
     while true; do
-      rows=(${(f)"$(model_rows "$query")"})
+      rows=(${(f)"$(model_rows "$query" "$scope")"})
       total=${#rows}
       (( total == 0 )) && sel=1
       (( total > 0 && sel > total )) && sel=$total
@@ -474,7 +565,19 @@ model_picker() {
 
       (( first )) || printf '\e[13A'
       first=0
-      picker_line "OpenRouter models ($total matches)"
+      case "$scope" in
+        all)        header="Models: [All]  Discounted  Free" ;;
+        discounted) header="Models: All  [Discounted]  Free" ;;
+        free)       header="Models: All  Discounted  [Free]" ;;
+      esac
+      if [[ "$scope" == discounted && "$DISCOUNT_CATALOG_STATUS" == unavailable ]]; then
+        header+=" — $DISCOUNT_CATALOG_ERROR"
+      elif (( total == 1 )); then
+        header+=" — 1 match"
+      else
+        header+=" — $total matches"
+      fi
+      picker_line "$header"
       picker_line "Search: $query"
       for i in {1..$page_size}; do
         index=$(( start + i ))
@@ -482,22 +585,54 @@ model_picker() {
           row="${rows[index]}"
           id="${row%%$'\t'*}"
           tail="${row#*$'\t'}"
-          display="${tail%%$'\t'*}"
-          context="${tail##*$'\t'}"
+          display="${tail%%$'\t'*}"; tail="${tail#*$'\t'}"
+          context="${tail%%$'\t'*}"; tail="${tail#*$'\t'}"
+          price_level="${tail%%$'\t'*}"
+          price_label="${tail##*$'\t'}"
           mark=" "
           [[ "$id" == "$active_model" ]] && mark="o"
-          text="  ${mark} ${display} — ${id} (${context})"
-          if (( index == sel )); then picker_line "$text" hl; else picker_line "$text"; fi
+          (( index == sel )) && [[ "$mark" == " " ]] && mark=">"
+          text="  ${mark} ${display} — ${id} (${context}, ${price_label})"
+          if (( price_level >= 0 )); then
+            if (( index == sel )); then
+              picker_line "$text" "cost-hl:$price_level"
+            else
+              picker_line "$text" "cost:$price_level"
+            fi
+          elif (( index == sel )); then
+            picker_line "$text" hl
+          else
+            picker_line "$text"
+          fi
         else
           picker_line ""
         fi
       done
-      picker_line "type to search, backspace erases, arrows move, return selects, esc cancels" dim
+      picker_line "←/→ scope · green→red price · search typing · ↑/↓ move · enter · esc cancel" dim
 
       read_key
       case "$REPLY" in
         up)   (( sel > 1 )) && (( sel-- )) || true ;;
         down) (( sel < total )) && (( sel++ )) || true ;;
+        left)
+          if (( scope_index > 1 )); then
+            (( scope_index-- ))
+            scope="${scope_names[scope_index]}"
+            (( scope_index == 2 )) && fetch_discounted_models "$name" || true
+            sel=1
+          fi ;;
+        right)
+          if (( scope_index < 3 )); then
+            (( scope_index++ ))
+            scope="${scope_names[scope_index]}"
+            (( scope_index == 2 )) && fetch_discounted_models "$name" || true
+            sel=1
+          fi ;;
+        tab)
+          scope_index=$(( scope_index % 3 + 1 ))
+          scope="${scope_names[scope_index]}"
+          (( scope_index == 2 )) && fetch_discounted_models "$name" || true
+          sel=1 ;;
         backspace)
           if (( ${#query} > 0 )); then query="${query[1,-2]}"; sel=1; fi ;;
         enter)
@@ -895,13 +1030,13 @@ catalog_switch() {
   if [[ -n "$model_arg" ]] && model_exists "$model_arg"; then
     model="$model_arg"
   elif [[ -n "$model_arg" && -t 0 && -t 1 ]]; then
-    model_picker "$model_arg" || return
+    model_picker "$name" "$model_arg" || return
     model="$SELECTED_MODEL"
   elif [[ -n "$model_arg" ]]; then
     echo "unknown model '$model_arg'; run: m models $name '$model_arg'" >&2
     return 2
   elif [[ -t 0 && -t 1 ]]; then
-    model_picker || return
+    model_picker "$name" || return
     model="$SELECTED_MODEL"
   else
     # Preserve the old scriptable behavior: with no TTY and no model, switch

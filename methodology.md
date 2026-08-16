@@ -166,6 +166,20 @@ model endpoint. `openrouter/free` is marked `direct`; it is installed as
 the active model without endpoint selection because the router chooses a
 compatible free model on every request.
 
+The model picker keeps one search query across three left/right scopes: All,
+Discounted, and Free. Free entries are identified by the documented zero
+prompt/completion/request prices, the `:free` variant suffix, or the direct
+free router. The Models API does not expose provider promotion metadata, so
+the discounted scope is populated lazily from OpenRouter's live discounted
+collection and intersected with the tool-capable API catalog. A collection
+failure disables only that scope.
+
+Model rows show the catalog's cheapest input/output price per million tokens.
+A fixed seven-step ANSI-256 scale runs from green (free) through yellow and
+orange to red (at least $30/M combined input/output); keeping fixed thresholds
+makes a model's color stable while searching or changing scope. Selection uses
+a bold row and marker without replacing the price color.
+
 ### 9. Endpoint selection uses live price and discount data
 
 After a concrete OpenRouter model is selected, `m` requests that model's
