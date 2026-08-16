@@ -127,8 +127,8 @@ if grep -q 'z-ai/glm-5.2' "$OUTPUT"; then fail "Q search included an unrelated m
 run models openrouter free
 grep -q '^openrouter/free' "$OUTPUT" || fail "automatic free router was not listed"
 
-# The model picker exposes All/Discounted/Free scopes, loads promotions only
-# when that scope is opened, and preserves price color while moving selection.
+# The model picker exposes All/Discounted/Free scopes, applies each scope's
+# ordering, loads promotions only on demand, and preserves price color.
 run_picker() {
   local keys="$1"
   local picker_settings="$TEST_TMP/picker-settings.json"
@@ -154,21 +154,34 @@ run_picker() {
   fi
 }
 
-run_picker '\r'
+run_picker '\033[C\033[C\033[B\r'
 grep -Fq 'Models: [All]  Discounted  Free' "$OUTPUT" || fail "model picker did not show all three scopes"
 grep -Fq '38;5;46m' "$OUTPUT" || fail "free model was not green"
 grep -Fq '38;5;196m' "$OUTPUT" || fail "expensive model was not red"
 grep -Fq '$5/$25/M' "$OUTPUT" || fail "model picker did not show live per-token prices"
+all_red_line="$(grep -n -m1 -F 'OpenAI: GPT Test' "$OUTPUT" | cut -d: -f1)"
+all_mid_line="$(grep -n -m1 -F 'Z.ai: GLM 5.2' "$OUTPUT" | cut -d: -f1)"
+all_cheap_line="$(grep -n -m1 -F 'Qwen: Qwen3 Coder' "$OUTPUT" | cut -d: -f1)"
+all_free_line="$(grep -n -m1 -F 'OpenRouter: Free Models Router' "$OUTPUT" | cut -d: -f1)"
+(( all_red_line < all_mid_line && all_mid_line < all_cheap_line && all_cheap_line < all_free_line )) \
+  || fail "All scope was not sorted from most expensive to free"
+free_large_line="$(grep -n -F 'Google: Gemma Test (free)' "$OUTPUT" | tail -n 1 | cut -d: -f1)"
+free_small_line="$(grep -n -F 'OpenRouter: Free Models Router' "$OUTPUT" | tail -n 1 | cut -d: -f1)"
+(( free_large_line < free_small_line )) || fail "Free scope was not sorted by largest context first"
 
-run_picker '\033[C\r\r'
-grep -Fq 'Models: All  [Discounted]  Free — 1 match' "$OUTPUT" \
+run_picker '\033[C\033[B\r\r'
+grep -Fq 'Models: All  [Discounted]  Free — 2 matches' "$OUTPUT" \
   || fail "right arrow did not open the discounted scope"
 grep -Fq 'GET https://openrouter.ai/collections/discounted-models' "$TEST_TMP/picker-request.json.requests" \
   || fail "discounted scope did not load OpenRouter's live collection"
+discount_high_line="$(grep -n -F 'Qwen: Qwen3 Coder' "$OUTPUT" | grep -F '90% off' | tail -n 1 | cut -d: -f1)"
+discount_low_line="$(grep -n -F 'Z.ai: GLM 5.2' "$OUTPUT" | grep -F '77% off' | tail -n 1 | cut -d: -f1)"
+(( discount_high_line < discount_low_line )) \
+  || fail "Discounted scope was not sorted by largest percentage reduction"
 assert_jq '.env.M_SWITCHER_MODEL == "z-ai/glm-5.2"' "$TEST_TMP/picker-settings.json" \
   "discounted scope did not select its matching model"
 
-run_picker '\033[C\033[C\r'
+run_picker '\033[C\033[C\033[B\r'
 grep -Fq 'Models: All  Discounted  [Free] — 2 matches' "$OUTPUT" \
   || fail "right arrow did not open the free scope"
 assert_jq '.env.M_SWITCHER_MODEL == "openrouter/free"' "$TEST_TMP/picker-settings.json" \

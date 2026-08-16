@@ -353,10 +353,19 @@ model_rows() {
       .id == "openrouter/free"
       or (.id | endswith(":free"))
       or (input_price == 0 and output_price == 0 and request_price == 0);
+    def price_total:
+      if input_price == null or output_price == null then 0
+      else (input_price + output_price) * 1000000
+      end;
+    def price_group:
+      if is_free then 0
+      elif input_price == null or output_price == null then 1
+      else 2
+      end;
     def price_level:
       if is_free then 0
       elif input_price == null or output_price == null then -1
-      else ((input_price + output_price) * 1000000) as $per_million
+      else price_total as $per_million
       | if $per_million <= 1 then 1
         elif $per_million <= 3 then 2
         elif $per_million <= 8 then 3
@@ -377,14 +386,24 @@ model_rows() {
         or ((.name // "" | lower) | contains($q)) then 1
       else 2 end;
     .data
-    | map(. + {"_m_rank": rank($q)})
+    | map(. + {
+        "_m_rank": rank($q),
+        "_m_price": price_total,
+        "_m_price_group": price_group
+      })
     | map(select(
         $scope == "all"
         or ($scope == "discounted" and ._m_discounted == true)
         or ($scope == "free" and is_free)
-      ))
+    ))
     | map(select(._m_rank < 2))
-    | (if $q == "" then . else sort_by(._m_rank) end)
+    | if $scope == "discounted" then
+        sort_by(._m_rank, -(._m_discount // 0), -._m_price)
+      elif $scope == "free" then
+        sort_by(._m_rank, -(.context_length // 0))
+      else
+        sort_by(._m_rank, -._m_price_group, -._m_price)
+      end
     | .[]
     | [
         .id,
@@ -393,10 +412,13 @@ model_rows() {
          then (((.context_length / 1000000 * 10) | floor) / 10 | tostring) + "M"
          else (((.context_length // 0) / 1000 | floor | tostring) + "k") end),
         (price_level | tostring),
-        (if is_free then "free"
+        ((if is_free then "free"
          elif input_price == null or output_price == null then "price n/a"
          else "$" + fmt_price(input_price) + "/$" + fmt_price(output_price) + "/M"
          end)
+         + (if $scope == "discounted" then
+              ", " + (((((._m_discount // 0) * 100) + 0.5) | floor) | tostring) + "% off"
+            else "" end))
       ]
     | @tsv
   '
@@ -408,7 +430,7 @@ model_rows() {
 # collection is a Next.js stream containing escaped structured model records;
 # exact slug fields are extracted and then intersected with the API catalog.
 fetch_discounted_models() {
-  local name="$1" url ids
+  local name="$1" url discounts
   [[ "$DISCOUNT_CATALOG_STATUS" == loaded ]] && return 0
   [[ "$DISCOUNT_CATALOG_STATUS" == unavailable ]] && return 1
 
@@ -425,17 +447,24 @@ fetch_discounted_models() {
     DISCOUNT_CATALOG_ERROR="discounted list unavailable"
     return 1
   fi
-  ids="$(printf '%s' "$HTTP_DATA" | jq -Rsc '
-    [scan("\\{\\\\\"model\\\\\":\\{\\\\\"slug\\\\\":\\\\\"([^\\\\\"]+)\\\\\"")[0]]
-    | unique
+  discounts="$(printf '%s' "$HTTP_DATA" | jq -Rsc '
+    [scan("\\{\\\\\"model\\\\\":\\{\\\\\"slug\\\\\":\\\\\"([^\\\\\"]+)\\\\\".*?\\\\\"discount\\\\\":([0-9.]+)")
+     | {id: .[0], discount: (.[1] | tonumber)}]
+    | group_by(.id)
+    | map({id: .[0].id, discount: (map(.discount) | max)})
   ' 2>/dev/null || true)"
-  if [[ -z "$ids" ]] || ! printf '%s' "$ids" | jq -e 'type == "array" and length > 0' >/dev/null 2>&1; then
+  if [[ -z "$discounts" ]] \
+     || ! printf '%s' "$discounts" | jq -e 'type == "array" and length > 0' >/dev/null 2>&1; then
     DISCOUNT_CATALOG_STATUS="unavailable"
     DISCOUNT_CATALOG_ERROR="discounted list format changed"
     return 1
   fi
-  MODEL_DATA="$(printf '%s' "$MODEL_DATA" | jq -c --argjson ids "$ids" '
-    .data |= map(.id as $id | . + {"_m_discounted": ($ids | index($id) != null)})
+  MODEL_DATA="$(printf '%s' "$MODEL_DATA" | jq -c --argjson discounts "$discounts" '
+    ($discounts | map({key: .id, value: .discount}) | from_entries) as $by_id
+    | .data |= map(.id as $id | . + {
+        "_m_discounted": ($by_id[$id] != null),
+        "_m_discount": ($by_id[$id] // 0)
+      })
   ')"
   DISCOUNT_CATALOG_STATUS="loaded"
   DISCOUNT_CATALOG_ERROR=""

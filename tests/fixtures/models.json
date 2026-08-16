@@ -18,7 +18,7 @@
       "id": "qwen/qwen3-coder",
       "name": "Qwen: Qwen3 Coder",
       "context_length": 262144,
-      "pricing": {"prompt": "0.0000005", "completion": "0.000002"},
+      "pricing": {"prompt": "0.00000005", "completion": "0.0000001"},
       "supported_parameters": ["tools", "tool_choice"]
     },
     {
@@ -31,7 +31,7 @@
     {
       "id": "google/gemma-test:free",
       "name": "Google: Gemma Test (free)",
-      "context_length": 131072,
+      "context_length": 1048576,
       "pricing": {"prompt": "0", "completion": "0", "request": "0"},
       "supported_parameters": ["tools", "tool_choice"]
     }

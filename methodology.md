@@ -178,7 +178,10 @@ Model rows show the catalog's cheapest input/output price per million tokens.
 A fixed seven-step ANSI-256 scale runs from green (free) through yellow and
 orange to red (at least $30/M combined input/output); keeping fixed thresholds
 makes a model's color stable while searching or changing scope. Selection uses
-a bold row and marker without replacing the price color.
+a bold row and marker without replacing the price color. All sorts by combined
+input/output price descending, Discounted by promotion percentage descending,
+and Free by context length descending. Match rank remains the primary key while
+a search query is active, so prefix matches still precede substring matches.
 
 ### 9. Endpoint selection uses live price and discount data
 

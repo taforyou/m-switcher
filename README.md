@@ -54,7 +54,9 @@ Choose `OpenRouter`, then:
    return selects.
    Each row includes the live input/output price per million tokens and is
    colored on a green-to-red scale: green is free, then yellow/orange, while
-   red marks the most expensive models.
+   red marks the most expensive models. **All** is ordered red-to-green,
+   **Discounted** by largest percentage reduction, and **Free** by largest
+   context window.
 2. Select a hosting endpoint. The cheapest compatible endpoint is highlighted
    by default, and discounts such as `(77% off)` appear at the end of the row.
 3. Restart `claude`, then use `/status` to verify the base URL is
@@ -241,7 +243,7 @@ including sibling narrowing and preset reuse, plain-provider switching and the
 `~/.claude.json` merge, file modes, symlinks, `install.sh`, settings
 preservation, status, the round trip back to Anthropic, and that no key ever
 reaches a `curl`/`jq` command line. A pseudo-TTY test also covers picker scope
-navigation, discounted/free filtering, and green/red price rendering.
+navigation, scope-specific sorting and filtering, and green/red price rendering.
 
 ## Troubleshooting
 
