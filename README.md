@@ -203,6 +203,14 @@ The bundled non-OpenRouter examples are:
   `https://api.kimi.com/coding/`, authenticated with a key from the
   [Kimi Code Console](https://www.kimi.com/code/console). It is distinct from
   the pay-per-token Moonshot platform.
+- **AI Passport** — Thai prepaid GPU provider serving a single model,
+  `qwen3.8-27b`, at `https://aipassport.trirat.co` (the Anthropic Messages
+  endpoint lives at the bare host — do not append `/v1`), authenticated with
+  `ANTHROPIC_AUTH_TOKEN` (set it with `m key aipassport`; the key is saved
+  without validation). All model roles point at `qwen3.8-27b` — it is the only
+  model the gateway serves — and `CLAUDE_CODE_AUTO_COMPACT_WINDOW` is set to
+  230,144 tokens to match the model's usable window (no `[1m]` suffix: that
+  would claim a 1M window the endpoint does not serve).
 
 ## Safety properties
 

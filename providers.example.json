@@ -54,13 +54,18 @@
       "endpointsUrl": "https://openrouter.ai/api/v1/models",
       "presetsUrl": "https://openrouter.ai/api/v1/presets",
       "recognitionOverride": "claude-sonnet-4-6",
-      "excludeIdSuffixes": [":batch"],
+      "excludeIdSuffixes": [
+        ":batch"
+      ],
       "specialModels": [
         {
           "id": "openrouter/free",
           "name": "OpenRouter: Free Models Router (automatic)",
           "context_length": 200000,
-          "pricing": {"prompt": "0", "completion": "0"},
+          "pricing": {
+            "prompt": "0",
+            "completion": "0"
+          },
           "direct": true
         }
       ],
@@ -83,6 +88,20 @@
       "contextEnv": {
         "max": "CLAUDE_CODE_MAX_CONTEXT_TOKENS"
       }
+    }
+  },
+  "aipassport": {
+    "label": "AI Passport (qwen3.8-27b)",
+    "env": {
+      "ANTHROPIC_AUTH_TOKEN": "<aipassport API key>",
+      "ANTHROPIC_BASE_URL": "https://aipassport.trirat.co",
+      "ANTHROPIC_DEFAULT_OPUS_MODEL": "qwen3.8-27b",
+      "ANTHROPIC_DEFAULT_SONNET_MODEL": "qwen3.8-27b",
+      "ANTHROPIC_DEFAULT_HAIKU_MODEL": "qwen3.8-27b",
+      "ANTHROPIC_DEFAULT_FABLE_MODEL": "qwen3.8-27b",
+      "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "230144",
+      "API_TIMEOUT_MS": "3000000",
+      "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"
     }
   }
 }
