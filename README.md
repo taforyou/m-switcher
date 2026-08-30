@@ -86,7 +86,8 @@ m models openrouter Q          # list matching tool-capable models
 m endpoints openrouter z-ai/glm-5.2
                                # list healthy endpoints, price, and discount
 
-m zai                          # switch directly to another configured provider
+m zai                          # Z.ai model picker (static GLM catalog)
+m zai glm-5.3-flash            # switch Z.ai directly to a specific model
 m kimi
 m claude                       # return to Anthropic and remove provider env
 m status                       # active provider, model, and endpoint
@@ -198,7 +199,24 @@ Providers live in `~/.claude/providers.json`:
 The bundled non-OpenRouter examples are:
 
 - **Z.ai (GLM)** — `https://api.z.ai/api/anthropic`, authenticated with
-  `ANTHROPIC_AUTH_TOKEN`.
+  `ANTHROPIC_AUTH_TOKEN` (set it with `m key zai`; Z.ai has no
+  key-validation endpoint, so the key is saved without validation). Z.ai
+  publishes no models API, so the bundled entry ships its
+  Claude-Code-capable chat lineup as a static catalog — `m zai` opens the
+  model picker over GLM-5.3, GLM-5.3-Flash, GLM-5.2, GLM-5-Turbo, and
+  GLM-4.7 (`m models zai` lists them; `m zai glm-5.3-flash` switches
+  directly). Z.ai serves each model itself, so there is no endpoint picker
+  or preset: the selected ID is written to every Claude Code model role.
+  Context handling follows
+  [Z.ai's devpack guide](https://docs.z.ai/devpack/latest-model): 1M-window
+  models (GLM-5.3, GLM-5.3-Flash, GLM-5.2) are routed with the `[1m]`
+  suffix and a 1,000,000-token `CLAUDE_CODE_MAX_CONTEXT_TOKENS` /
+  `CLAUDE_CODE_AUTO_COMPACT_WINDOW`; 200K models (GLM-5-Turbo, GLM-4.7)
+  get their exact window without the suffix. GLM-OCR and GLM-ASR-2512 are
+  document/speech models, not chat backends, and are deliberately not
+  offered. Prices are Z.ai's published per-million rates and change only
+  when the bundled file does, so the Discounted picker scope reports
+  itself unconfigured for Z.ai.
 - **Kimi Code** — the subscription service at
   `https://api.kimi.com/coding/`, authenticated with a key from the
   [Kimi Code Console](https://www.kimi.com/code/console). It is distinct from
@@ -253,11 +271,13 @@ tests/test_m.zsh
 The suite uses a mock OpenRouter API (`tests/bin/curl`, which also records
 every request, header file and argv) and verifies key validation and storage,
 prefix search, `:batch` exclusion, discount ordering, exact endpoint pinning
-including sibling narrowing and preset reuse, plain-provider switching and the
-`~/.claude.json` merge, file modes, symlinks, `install.sh`, settings
-preservation, status, the round trip back to Anthropic, and that no key ever
-reaches a `curl`/`jq` command line. A pseudo-TTY test also covers picker scope
-navigation, scope-specific sorting and filtering, and green/red price rendering.
+including sibling narrowing and preset reuse, static-catalog (Z.ai) listing,
+search and offline routing with `[1m]` and exact 200K windows, plain-provider
+switching and the `~/.claude.json` merge, file modes, symlinks, `install.sh`,
+settings preservation, status, the round trip back to Anthropic, and that no
+key ever reaches a `curl`/`jq` command line. A pseudo-TTY test also covers
+picker scope navigation, scope-specific sorting and filtering, and green/red
+price rendering.
 
 ## Troubleshooting
 

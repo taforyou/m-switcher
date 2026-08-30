@@ -2,12 +2,14 @@
 # m — switch Claude Code between providers in ~/.claude/settings.json
 #
 #   m                         interactive provider picker
-#   m openrouter              choose an OpenRouter model and endpoint
+#   m <catalog-provider>      choose one of its models (and endpoints, when it
+#                             has them: OpenRouter live, or a static list such
+#                             as the bundled Z.ai GLM lineup)
 #   m openrouter Q            start model search at "Q"
 #   m openrouter <model> <endpoint-tag>
-#   m key openrouter          securely save/validate an API key
-#   m models openrouter [query]
-#   m endpoints openrouter <model> [query]
+#   m key <provider>          securely save/validate an API key
+#   m models <provider> [query]
+#   m endpoints <provider> <model> [query]
 #   m claude                  return to the Anthropic default
 #   m status                  print the active provider/model/endpoint
 #
@@ -95,7 +97,15 @@ label_of() {
 }
 
 has_catalog() {
-  jq -e --arg n "$1" '.[$n].modelCatalog.url? | type == "string" and length > 0' "$PROV" >/dev/null
+  jq -e --arg n "$1" '
+    .[$n].modelCatalog as $c
+    | (($c.url? // "") | type == "string" and length > 0)
+      or (($c.models? // []) | type == "array" and length > 0)
+  ' "$PROV" >/dev/null
+}
+
+has_endpoints() {
+  jq -e --arg n "$1" '.[$n].modelCatalog.endpointsUrl? | type == "string" and length > 0' "$PROV" >/dev/null
 }
 
 credential_of() {
@@ -311,9 +321,34 @@ ensure_credential() {
 
 fetch_models() {
   local name="$1" token url special exclude
-  token="$(credential_of "$name")"
   url="$(jq -r --arg n "$name" '.[$n].modelCatalog.url // ""' "$PROV")"
-  [[ -n "$url" ]] || { echo "provider '$name' has no model catalog" >&2; return 2; }
+  special="$(jq -c --arg n "$name" '.[$n].modelCatalog.specialModels // []' "$PROV")"
+  # excludeIdSuffixes drops catalog variants that are not usable for an
+  # interactive Claude Code session (OpenRouter's ":batch" Batch-API models).
+  # Filtering here also makes model_exists reject them.
+  exclude="$(jq -c --arg n "$name" '.[$n].modelCatalog.excludeIdSuffixes // []' "$PROV")"
+  if [[ -z "$url" ]]; then
+    # Providers without a catalog URL ship their lineup statically in
+    # providers.json (the bundled Z.ai GLM models): browsing needs no
+    # credential and no request.
+    MODEL_DATA="$(jq -c --arg n "$name" --argjson special "$special" --argjson exclude "$exclude" '
+      {data: ($special + [
+        .[$n].modelCatalog.models[]?
+        | select(type == "object" and ((.id // "") | type == "string" and length > 0))
+        | .id as $id
+        | select(($special | any(.id == $id)) | not)
+        | select(($exclude | any(. as $s | $id | endswith($s))) | not)
+      ])}
+    ' "$PROV")"
+    printf '%s' "$MODEL_DATA" | jq -e '.data | type == "array" and length > 0' >/dev/null 2>&1 || {
+      echo "provider '$name' has no usable model catalog" >&2
+      return 1
+    }
+    DISCOUNT_CATALOG_STATUS="unloaded"
+    DISCOUNT_CATALOG_ERROR=""
+    return 0
+  fi
+  token="$(credential_of "$name")"
   http_request GET "$url" "$token" || return 1
   if ! http_succeeded; then
     print_api_error "unable to load models"
@@ -323,11 +358,6 @@ fetch_models() {
     echo "model catalog returned an unexpected response" >&2
     return 1
   }
-  special="$(jq -c --arg n "$name" '.[$n].modelCatalog.specialModels // []' "$PROV")"
-  # excludeIdSuffixes drops catalog variants that are not usable for an
-  # interactive Claude Code session (OpenRouter's ":batch" Batch-API models).
-  # Filtering here also makes model_exists reject them.
-  exclude="$(jq -c --arg n "$name" '.[$n].modelCatalog.excludeIdSuffixes // []' "$PROV")"
   MODEL_DATA="$(printf '%s' "$HTTP_DATA" | jq -c --argjson special "$special" --argjson exclude "$exclude" '
     .data as $models
     | .data = ($special + [
@@ -1068,6 +1098,10 @@ switch_to() {
        | if $name != "claude" and $contextLength != "" and $contextKey != "" then
            .env[$contextKey] = $contextLength
          else . end
+       | ($p[0][$name].modelCatalog.contextEnv.autoCompact // "") as $autoCompactKey
+       | if $name != "claude" and $contextLength != "" and $autoCompactKey != "" then
+           .env[$autoCompactKey] = $contextLength
+         else . end
        | if .env == {} then del(.env) else . end
      ' "$SETTINGS" > "$tmp"; then
     rm -f "$tmp" ${tmp2:+"$tmp2"}
@@ -1128,6 +1162,20 @@ catalog_switch() {
   if model_routes_directly "$name" "$model"; then
     [[ -z "$endpoint_arg" ]] || {
       echo "model '$model' selects its endpoint automatically and does not accept an endpoint" >&2
+      return 2
+    }
+    context_length="$(model_context_length "$model")"
+    (( context_length > 0 )) || context_length=""
+    switch_to "$name" "$model" "$model" "" "" "$context_length"
+    return
+  fi
+
+  # Providers without an endpoint catalog (a first-party API such as Z.ai's
+  # Anthropic-compatible gateway serves each model directly) route by model
+  # ID alone: there is no host to pin and no preset to wrap.
+  if ! has_endpoints "$name"; then
+    [[ -z "$endpoint_arg" ]] || {
+      echo "provider '$name' does not support endpoint selection" >&2
       return 2
     }
     context_length="$(model_context_length "$model")"

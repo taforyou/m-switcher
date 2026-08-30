@@ -161,6 +161,18 @@ the server's ranking when no query is present. Typed input is matched
 case-insensitively against the beginning of the model name/ID first, then
 as a substring, so one keystroke such as `Q` immediately narrows the list.
 
+Providers that publish no models API ship their lineup statically instead:
+`modelCatalog.models` in providers.json holds the same
+id/name/context_length/pricing records a live catalog would return, and is
+served without a credential or request (the bundled Z.ai GLM entry — Z.ai
+has no models endpoint, so its five Claude-Code-capable chat models and
+their official context windows travel with the file). When such a provider
+also has no `endpointsUrl`, `catalog_switch` routes by model ID alone —
+the same direct path router models take — because a first-party gateway
+hosts every model itself and there is nothing to pin. The tradeoff is
+staleness: static prices and windows change only when the bundled file
+does, and the Discounted picker scope reports itself unconfigured.
+
 Catalog `specialModels` add router slugs not returned by the filtered
 model endpoint. `openrouter/free` is marked `direct`; it is installed as
 the active model without endpoint selection because the router chooses a
@@ -232,6 +244,10 @@ to an unrecognized custom ID while retaining proactive compaction. This is
 safer than disabling unknown-model enforcement and waiting for the gateway to
 return a context-length error. Direct routers use their catalog context; the
 variable-model `openrouter/free` router is conservatively declared as 200K.
+A provider may additionally declare `contextEnv.autoCompact` (Z.ai does):
+the same selected window is then written to
+`CLAUDE_CODE_AUTO_COMPACT_WINDOW`, matching Z.ai's devpack instructions, so
+compaction tracks the chosen model instead of a static default.
 
 Claude Code 2.1.233 also emits a separate unknown-model diagnostic. A
 `modelOverrides` value suppresses it, but makes Claude Code identify the route

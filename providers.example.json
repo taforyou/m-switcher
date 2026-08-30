@@ -1,16 +1,71 @@
 {
   "zai": {
-    "label": "Z.ai (glm-5.3)",
+    "label": "Z.ai (GLM)",
     "env": {
       "ANTHROPIC_AUTH_TOKEN": "<z.ai API key>",
       "ANTHROPIC_BASE_URL": "https://api.z.ai/api/anthropic",
+      "ANTHROPIC_MODEL": "glm-5.3[1m]",
+      "ANTHROPIC_DEFAULT_FABLE_MODEL": "glm-5.3[1m]",
       "ANTHROPIC_DEFAULT_OPUS_MODEL": "glm-5.3[1m]",
       "ANTHROPIC_DEFAULT_SONNET_MODEL": "glm-5.3[1m]",
       "ANTHROPIC_DEFAULT_HAIKU_MODEL": "glm-4.7",
-      "ANTHROPIC_DEFAULT_FABLE_MODEL": "glm-5.3[1m]",
+      "CLAUDE_CODE_SUBAGENT_MODEL": "glm-4.7",
+      "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "1000000",
       "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "1000000",
       "API_TIMEOUT_MS": "3000000",
       "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"
+    },
+    "modelCatalog": {
+      "recognitionOverride": "claude-sonnet-4-6",
+      "models": [
+        {
+          "id": "glm-5.3",
+          "name": "GLM-5.3",
+          "context_length": 1000000,
+          "pricing": { "prompt": "0.0000014", "completion": "0.0000044" }
+        },
+        {
+          "id": "glm-5.3-flash",
+          "name": "GLM-5.3-Flash",
+          "context_length": 1000000,
+          "pricing": { "prompt": "0.000000075", "completion": "0.00000025" }
+        },
+        {
+          "id": "glm-5.2",
+          "name": "GLM-5.2",
+          "context_length": 1000000,
+          "pricing": { "prompt": "0.0000014", "completion": "0.0000044" }
+        },
+        {
+          "id": "glm-5-turbo",
+          "name": "GLM-5-Turbo",
+          "context_length": 200000
+        },
+        {
+          "id": "glm-4.7",
+          "name": "GLM-4.7",
+          "context_length": 200000,
+          "pricing": { "prompt": "0.0000006", "completion": "0.0000022" }
+        }
+      ],
+      "modelEnv": [
+        "ANTHROPIC_MODEL",
+        "ANTHROPIC_DEFAULT_FABLE_MODEL",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+        "CLAUDE_CODE_SUBAGENT_MODEL"
+      ],
+      "selectionEnv": {
+        "model": "M_SWITCHER_MODEL",
+        "context": "M_SWITCHER_CONTEXT_LENGTH",
+        "overrideKey": "M_SWITCHER_MODEL_OVERRIDE_KEY",
+        "overrideValue": "M_SWITCHER_MODEL_OVERRIDE_VALUE"
+      },
+      "contextEnv": {
+        "max": "CLAUDE_CODE_MAX_CONTEXT_TOKENS",
+        "autoCompact": "CLAUDE_CODE_AUTO_COMPACT_WINDOW"
+      }
     }
   },
   "kimi": {

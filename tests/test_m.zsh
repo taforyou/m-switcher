@@ -88,9 +88,10 @@ if grep -q 'refusing' "$OUTPUT"; then fail "m models kimi demanded a key before 
 expect_rc 2 models claude
 grep -q 'no model catalog' "$OUTPUT" || fail "m models claude did not report the missing catalog"
 
-# CLI usage errors exit 2.
+# CLI usage errors exit 2. (zai now takes a model argument; kimi is still a
+# plain provider that accepts none.)
 expect_rc 2 bogus
-expect_rc 2 zai extra
+expect_rc 2 kimi extra
 expect_rc 2 status extra
 
 # --- m key ------------------------------------------------------------------
@@ -112,7 +113,7 @@ assert_private "$PROVIDERS.bak" "providers.json.bak is not private after m key"
 
 # Providers without a validationUrl are saved but not reported as validated.
 printf '%s\n' 'zai-key' | run key zai
-grep -q '^saved API key for Z.ai (glm-5.3) (not validated' "$OUTPUT" || fail "unvalidated save was misreported: $(cat "$OUTPUT")"
+grep -q '^saved API key for Z.ai (GLM) (not validated' "$OUTPUT" || fail "unvalidated save was misreported: $(cat "$OUTPUT")"
 printf '%s\n' 'kimi-key' | run key kimi
 grep -q '(not validated' "$OUTPUT" || fail "unvalidated Kimi save was misreported"
 assert_jq '.zai.env.ANTHROPIC_AUTH_TOKEN == "zai-key" and .kimi.env.ANTHROPIC_API_KEY == "kimi-key"' "$PROVIDERS" \
@@ -346,6 +347,65 @@ if grep -q 'endpoint:' "$OUTPUT"; then fail "free router incorrectly reported a 
 expect_rc 2 openrouter openrouter/free streamlake/fp8
 grep -q 'does not accept an endpoint' "$OUTPUT" || fail "direct route accepted an endpoint"
 
+# --- static catalog provider (Z.ai) ------------------------------------------
+# The bundled Z.ai entry ships its model list inside providers.json: models
+# are listed, searched, and routed offline — none of this section may touch
+# the network.
+rm -f "$M_TEST_LOG" "$M_TEST_LOG.requests" "$M_TEST_LOG.headers"
+run models zai
+grep -q '^glm-5.3 ' "$OUTPUT" || fail "static catalog did not list glm-5.3"
+grep -q '^glm-5.3-flash ' "$OUTPUT" || fail "static catalog did not list glm-5.3-flash"
+grep -q '^glm-5.2 ' "$OUTPUT" || fail "static catalog did not list glm-5.2"
+grep -q '^glm-5-turbo ' "$OUTPUT" || fail "static catalog did not list glm-5-turbo"
+grep -q '^glm-4.7 ' "$OUTPUT" || fail "static catalog did not list glm-4.7"
+[[ "$(grep -c '^glm-' "$OUTPUT")" == 5 ]] || fail "static catalog listed unexpected models"
+grep -q '1M context' "$OUTPUT" || fail "static catalog did not show context windows"
+run models zai flash
+[[ "$(grep -c '^glm-' "$OUTPUT")" == 1 ]] || fail "static catalog search did not narrow to the flash model"
+before="$(snapshot "$SETTINGS")"
+expect_rc 2 endpoints zai glm-5.3
+grep -q 'does not support endpoint selection' "$OUTPUT" || fail "static catalog provider claimed endpoint support"
+expect_rc 2 zai nonexistent/model
+grep -q "unknown model 'nonexistent/model'" "$OUTPUT" || fail "unknown static model was accepted"
+expect_rc 2 zai glm-5.3 streamlake/fp8
+grep -q 'does not support endpoint selection' "$OUTPUT" || fail "static catalog provider accepted an endpoint argument"
+[[ "$(snapshot "$SETTINGS")" == "$before" ]] || fail "a refused static route modified settings"
+
+# Selecting a 1M model routes every model role with the [1m] suffix and
+# configures both context variables to the model's real 1M window.
+run zai glm-5.3
+assert_jq '.env.ANTHROPIC_BASE_URL == "https://api.z.ai/api/anthropic"
+           and .env.ANTHROPIC_AUTH_TOKEN == "zai-key"
+           and .env.ANTHROPIC_MODEL == "glm-5.3[1m]"
+           and .env.ANTHROPIC_DEFAULT_HAIKU_MODEL == "glm-5.3[1m]"
+           and .env.CLAUDE_CODE_SUBAGENT_MODEL == "glm-5.3[1m]"
+           and .env.M_SWITCHER_MODEL == "glm-5.3"
+           and .env.CLAUDE_CODE_MAX_CONTEXT_TOKENS == "1000000"
+           and .env.CLAUDE_CODE_AUTO_COMPACT_WINDOW == "1000000"
+           and .modelOverrides["claude-sonnet-4-6"] == "glm-5.3"
+           and (.env | has("M_SWITCHER_ENDPOINT") | not)' "$SETTINGS" \
+  "1M Z.ai model was not routed with its real window"
+assert_jq '.env.KEEP_ME == "yes" and .permissions.allow == ["Read"]
+           and .modelOverrides["claude-opus-4-6"] == "user/opus-route"' "$SETTINGS" \
+  "Z.ai model switch changed unrelated settings"
+run status
+grep -q '^active: Z.ai (GLM) — model: glm-5.3 — context: 1000000 tokens' "$OUTPUT" \
+  || fail "status did not report the Z.ai route: $(cat "$OUTPUT")"
+if grep -q 'endpoint:' "$OUTPUT"; then fail "Z.ai status invented an endpoint"; fi
+
+# A 200K model drops the [1m] suffix and shrinks both window variables.
+run zai glm-4.7
+assert_jq '.env.ANTHROPIC_MODEL == "glm-4.7"
+           and .env.ANTHROPIC_DEFAULT_SONNET_MODEL == "glm-4.7"
+           and .env.CLAUDE_CODE_MAX_CONTEXT_TOKENS == "200000"
+           and .env.CLAUDE_CODE_AUTO_COMPACT_WINDOW == "200000"
+           and .modelOverrides["claude-sonnet-4-6"] == "glm-4.7"' "$SETTINGS" \
+  "200K Z.ai model was routed with the wrong window"
+
+# Everything in this section ran offline.
+[[ ! -e "$M_TEST_LOG" && ! -e "$M_TEST_LOG.requests" && ! -e "$M_TEST_LOG.headers" ]] \
+  || fail "static catalog provider made a network request"
+
 # Without a model in a non-interactive shell, m installs the provider's static
 # env block (its ~anthropic/... defaults) and clears dynamic selection keys.
 run openrouter
@@ -393,7 +453,7 @@ assert_jq '.env.ANTHROPIC_BASE_URL == "https://api.z.ai/api/anthropic"
   "plain provider switch did not install the Z.ai env block"
 [[ "$(snapshot "$CLAUDE_JSON")" == "$claude_json_before" ]] || fail "switching to Z.ai touched claude.json"
 run status
-grep -q '^active: Z.ai (glm-5.3)' "$OUTPUT" || fail "status did not derive Z.ai from its base URL"
+grep -q '^active: Z.ai (GLM)' "$OUTPUT" || fail "status did not derive Z.ai from its base URL"
 
 # Cross-provider switch: no Z.ai key survives, Kimi's flags are merged into
 # ~/.claude.json additively with a private backup of the previous file.
