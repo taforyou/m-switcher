@@ -256,6 +256,11 @@ done
 assert_jq '.env.ANTHROPIC_DEFAULT_FABLE_MODEL == .env.ANTHROPIC_MODEL
            and .env.CLAUDE_CODE_SUBAGENT_MODEL == .env.ANTHROPIC_MODEL' "$SETTINGS" \
   "not every Claude Code model role uses the selected route"
+# An agent definition or per-spawn override naming another model must not pull
+# a subagent off the route: Claude Code 2.1.251+ lets those win over
+# CLAUDE_CODE_SUBAGENT_MODEL unless the force flag is set.
+assert_jq '.env.CLAUDE_CODE_SUBAGENT_MODEL_FORCE == "1"' "$SETTINGS" \
+  "subagents are not forced onto the selected route"
 assert_jq '.env.M_SWITCHER_MODEL == "z-ai/glm-5.2"
            and .env.M_SWITCHER_ENDPOINT == "streamlake/fp8"
            and .env.M_SWITCHER_ENDPOINT_NAME == "StreamLake"
@@ -371,20 +376,26 @@ expect_rc 2 zai glm-5.3 streamlake/fp8
 grep -q 'does not support endpoint selection' "$OUTPUT" || fail "static catalog provider accepted an endpoint argument"
 [[ "$(snapshot "$SETTINGS")" == "$before" ]] || fail "a refused static route modified settings"
 
-# Selecting a 1M model routes every model role with the [1m] suffix and
-# configures both context variables to the model's real 1M window.
+# Selecting a 1M model routes every model role with the [1m] suffix, forces
+# subagents onto it, and configures both context variables to the model's
+# real 1M window.
 run zai glm-5.3
 assert_jq '.env.ANTHROPIC_BASE_URL == "https://api.z.ai/api/anthropic"
            and .env.ANTHROPIC_AUTH_TOKEN == "zai-key"
            and .env.ANTHROPIC_MODEL == "glm-5.3[1m]"
            and .env.ANTHROPIC_DEFAULT_HAIKU_MODEL == "glm-5.3[1m]"
            and .env.CLAUDE_CODE_SUBAGENT_MODEL == "glm-5.3[1m]"
+           and .env.CLAUDE_CODE_SUBAGENT_MODEL_FORCE == "1"
            and .env.M_SWITCHER_MODEL == "glm-5.3"
            and .env.CLAUDE_CODE_MAX_CONTEXT_TOKENS == "1000000"
            and .env.CLAUDE_CODE_AUTO_COMPACT_WINDOW == "1000000"
            and .modelOverrides["claude-sonnet-4-6"] == "glm-5.3"
            and (.env | has("M_SWITCHER_ENDPOINT") | not)' "$SETTINGS" \
   "1M Z.ai model was not routed with its real window"
+for role in $(jq -r '.zai.modelCatalog.modelEnv[]' "$PROVIDERS"); do
+  jq -e --arg k "$role" '.env[$k] == "glm-5.3[1m]"' "$SETTINGS" >/dev/null \
+    || fail "Z.ai model role $role does not use the selected model"
+done
 assert_jq '.env.KEEP_ME == "yes" and .permissions.allow == ["Read"]
            and .modelOverrides["claude-opus-4-6"] == "user/opus-route"' "$SETTINGS" \
   "Z.ai model switch changed unrelated settings"
@@ -392,6 +403,22 @@ run status
 grep -q '^active: Z.ai (GLM) — model: glm-5.3 — context: 1000000 tokens' "$OUTPUT" \
   || fail "status did not report the Z.ai route: $(cat "$OUTPUT")"
 if grep -q 'endpoint:' "$OUTPUT"; then fail "Z.ai status invented an endpoint"; fi
+
+# A cheaper 1M pick replaces every role the static env block seeds with
+# another model, so nothing in the session bills against the dearer default.
+run zai glm-5.3-flash
+for role in $(jq -r '.zai.modelCatalog.modelEnv[]' "$PROVIDERS"); do
+  jq -e --arg k "$role" '.env[$k] == "glm-5.3-flash[1m]"' "$SETTINGS" >/dev/null \
+    || fail "Z.ai model role $role still names another model after picking flash"
+done
+assert_jq '.env.CLAUDE_CODE_SUBAGENT_MODEL_FORCE == "1"
+           and .env.M_SWITCHER_MODEL == "glm-5.3-flash"
+           and .modelOverrides["claude-sonnet-4-6"] == "glm-5.3-flash"' "$SETTINGS" \
+  "flash selection did not pin subagents"
+if jq -r '.env | to_entries[] | select(.key != "M_SWITCHER_MODEL") | .value' "$SETTINGS" \
+     | grep -qx 'glm-5.3\(\[1m\]\)\?'; then
+  fail "a model role still points at glm-5.3 after picking glm-5.3-flash"
+fi
 
 # A 200K model drops the [1m] suffix and shrinks both window variables.
 run zai glm-4.7
@@ -448,6 +475,8 @@ run zai
 assert_jq '.env.ANTHROPIC_BASE_URL == "https://api.z.ai/api/anthropic"
            and .env.ANTHROPIC_AUTH_TOKEN == "zai-key"
            and .env.KEEP_ME == "yes"
+           and .env.CLAUDE_CODE_SUBAGENT_MODEL == .env.ANTHROPIC_MODEL
+           and .env.CLAUDE_CODE_SUBAGENT_MODEL_FORCE == "1"
            and (.env | has("ANTHROPIC_API_KEY") | not)
            and (.env | has("M_SWITCHER_MODEL") | not)' "$SETTINGS" \
   "plain provider switch did not install the Z.ai env block"
@@ -462,6 +491,7 @@ assert_jq '.env.ANTHROPIC_BASE_URL == "https://api.kimi.com/coding/"
            and .env.ANTHROPIC_API_KEY == "kimi-key"
            and (.env | has("ANTHROPIC_AUTH_TOKEN") | not)
            and (.env | has("API_TIMEOUT_MS") | not)
+           and (.env | has("CLAUDE_CODE_SUBAGENT_MODEL_FORCE") | not)
            and .env.KEEP_ME == "yes"
            and .permissions.allow == ["Read"]' "$SETTINGS" \
   "cross-provider switch leaked Z.ai keys or lost user settings"

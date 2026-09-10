@@ -135,7 +135,12 @@ model and endpoint:
 ```
 
 Claude Code is then configured to use `@preset/m-switcher-…` for its main,
-Opus, Sonnet, Haiku, Fable, and subagent roles. Existing identical presets are
+Opus, Sonnet, Haiku, Fable, and subagent roles, and
+`CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1` is set so that an agent definition or a
+per-spawn override naming another model (a plugin agent pinned to
+`claude-opus-4-6`, say) cannot pull a subagent off the route — since Claude
+Code 2.1.251 such overrides win over `CLAUDE_CODE_SUBAGENT_MODEL` unless the
+force flag is present. Existing identical presets are
 reused. Exact pinning deliberately disables provider fallback: if the selected
 endpoint is unavailable, the request fails instead of silently using a more
 expensive host. Run `m` again to choose another endpoint.
@@ -206,7 +211,12 @@ The bundled non-OpenRouter examples are:
   model picker over GLM-5.3, GLM-5.3-Flash, GLM-5.2, GLM-5-Turbo, and
   GLM-4.7 (`m models zai` lists them; `m zai glm-5.3-flash` switches
   directly). Z.ai serves each model itself, so there is no endpoint picker
-  or preset: the selected ID is written to every Claude Code model role.
+  or preset: the selected ID is written to every Claude Code model role and
+  subagents are forced onto it (`CLAUDE_CODE_SUBAGENT_MODEL_FORCE`), so a
+  cheaper pick such as GLM-5.3-Flash is what every subagent bills against
+  rather than a model named by an agent definition. `install.sh` merges only
+  new providers, so add `"CLAUDE_CODE_SUBAGENT_MODEL_FORCE": "1"` to the
+  `env` of a `providers.json` entry created before this flag existed.
   Context handling follows
   [Z.ai's devpack guide](https://docs.z.ai/devpack/latest-model): 1M-window
   models (GLM-5.3, GLM-5.3-Flash, GLM-5.2) are routed with the `[1m]`
@@ -252,6 +262,10 @@ The bundled non-OpenRouter examples are:
   flags are merged additively and stay in place after switching away.
 - **No silent endpoint fallback.** Exact endpoint presets use `only` and set
   `allow_fallbacks` to false.
+- **No subagent escape.** A model switch writes the selected model to every
+  Claude Code model role and sets `CLAUDE_CODE_SUBAGENT_MODEL_FORCE`, so a
+  subagent cannot be moved to another model by an agent definition or a
+  per-spawn override; the flag is removed when switching back to Claude.
 - **Accurate context limits.** The endpoint's advertised context length
   configures Claude Code's unknown-model window automatically. The less-safe
   `CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT` escape hatch is not

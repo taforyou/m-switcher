@@ -232,6 +232,20 @@ and:
 ```
 
 All Claude Code model-role variables are then set to `@preset/<slug>`.
+Setting the roles is not enough for subagents: since Claude Code 2.1.251
+`CLAUDE_CODE_SUBAGENT_MODEL` is only a default, and an agent definition's
+`model:` or a per-spawn model wins over it. A plugin agent pinned to
+`claude-opus-4-6` would therefore leave the route entirely — on OpenRouter
+that request buys real Opus, on a first-party gateway it is whatever the
+gateway maps an unknown Claude ID to (verified on 2.1.267 against a mock
+endpoint: the subagent request carried `claude-opus-4-6` while every
+model-role variable named the selected model). Every catalog provider's
+`env` block therefore carries `CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1` (added in
+2.1.248), which makes Claude Code apply `CLAUDE_CODE_SUBAGENT_MODEL` to every
+subagent; being an `env` key it is stripped like any other owned key on the
+way out. The Z.ai block also seeds its Haiku and subagent defaults from the
+same lineup as its main model, so a non-interactive `m zai` never forces
+subagents onto a model the plan may not serve.
 Before writing a new preset version, `m` retrieves the deterministic slug
 and reuses it when the configuration already matches. Selection metadata
 uses provider-declared `M_SWITCHER_*` environment keys so `m status` can
@@ -297,6 +311,9 @@ The invariants to assert after any change to the script:
 8. **Override ownership**: m-switcher removes only the recognition mapping it
    created and never overwrites a conflicting user-owned `modelOverrides`
    entry.
+9. **Subagent pinning**: a model switch sets every model-role variable and
+   `CLAUDE_CODE_SUBAGENT_MODEL_FORCE`, so no role and no subagent names a
+   model other than the selected one, and the round trip removes the flag.
 
 The interactive picker can be exercised headlessly with a pseudo-TTY:
 
