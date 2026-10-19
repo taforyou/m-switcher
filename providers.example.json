@@ -147,6 +147,64 @@
       }
     }
   },
+  "anthropic": {
+    "label": "Anthropic API (Console key)",
+    "env": {
+      "ANTHROPIC_API_KEY": "<Claude Console API key>",
+      "ANTHROPIC_BASE_URL": "https://api.anthropic.com",
+      "ANTHROPIC_MODEL": "claude-opus-5-5",
+      "ANTHROPIC_DEFAULT_FABLE_MODEL": "claude-fable-5-1",
+      "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-5-5",
+      "ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-sonnet-5-5",
+      "ANTHROPIC_DEFAULT_HAIKU_MODEL": "claude-haiku-5-5",
+      "CLAUDE_CODE_SUBAGENT_MODEL": "claude-opus-5-5",
+      "CLAUDE_CODE_SUBAGENT_MODEL_FORCE": "1"
+    },
+    "modelCatalog": {
+      "validationUrl": "https://api.anthropic.com/v1/models",
+      "validationAuth": {
+        "header": "x-api-key",
+        "headers": { "anthropic-version": "2023-06-01" }
+      },
+      "models": [
+        {
+          "id": "claude-opus-5-5",
+          "name": "Claude Opus 5.5",
+          "context_length": 1000000,
+          "pricing": { "prompt": "0.000004", "completion": "0.00002" }
+        },
+        {
+          "id": "claude-sonnet-5-5",
+          "name": "Claude Sonnet 5.5",
+          "context_length": 1000000,
+          "pricing": { "prompt": "0.000002", "completion": "0.00001" }
+        },
+        {
+          "id": "claude-haiku-5-5",
+          "name": "Claude Haiku 5.5",
+          "context_length": 1000000,
+          "pricing": { "prompt": "0.0000001", "completion": "0.0000005" }
+        },
+        {
+          "id": "claude-fable-5-1",
+          "name": "Claude Fable 5.1",
+          "context_length": 1000000,
+          "pricing": { "prompt": "0.00001", "completion": "0.00005" }
+        }
+      ],
+      "modelEnv": [
+        "ANTHROPIC_MODEL",
+        "ANTHROPIC_DEFAULT_FABLE_MODEL",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+        "CLAUDE_CODE_SUBAGENT_MODEL"
+      ],
+      "selectionEnv": {
+        "model": "M_SWITCHER_MODEL"
+      }
+    }
+  },
   "aipassport": {
     "label": "AI Passport (qwen3.8-27b)",
     "env": {

@@ -8,7 +8,9 @@
 #   $M_TEST_LOG           body of the last preset POST
 #   $M_TEST_LOG.preset.<slug>  config of each preset created (served by GET)
 # Endpoints that need auth on the real API (key, presets) return 401 unless the
-# header file carries the test key. M_TEST_FAIL_MODELS=1 makes /models fail.
+# header file carries the test key; Anthropic's /v1/models instead needs the
+# x-api-key and anthropic-version headers. M_TEST_FAIL_MODELS=1 makes
+# /models fail.
 set -eu
 
 [ -n "${M_TEST_ARGV_LOG:-}" ] && printf '%s\n' "$*" >> "$M_TEST_ARGV_LOG"
@@ -18,7 +20,10 @@ output=
 payload_file=
 url=
 auth=
+api_key=
+api_version=
 test_key="sk-or-test"
+anthropic_test_key="sk-ant-test"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -33,6 +38,8 @@ while [ "$#" -gt 0 ]; do
           @*)
             cat "${value#@}" >> "$M_TEST_LOG.headers"
             auth="$(grep '^Authorization: ' "${value#@}" || true)"
+            api_key="$(grep '^x-api-key: ' "${value#@}" || true)"
+            api_version="$(grep '^anthropic-version: ' "${value#@}" || true)"
             ;;
         esac
       fi
@@ -65,6 +72,19 @@ unauthorized() {
 }
 
 case "$url" in
+  https://api.anthropic.com/v1/models)
+    if [ -n "$auth" ]; then
+      echo "mock curl: Anthropic API key sent as a bearer token" >&2
+      exit 1
+    elif [ "$api_key" = "x-api-key: $anthropic_test_key" ] \
+         && [ "$api_version" = "anthropic-version: 2023-06-01" ]; then
+      printf '%s\n' '{"data":[{"type":"model","id":"claude-opus-5-5","display_name":"Claude Opus 5.5"}],"has_more":false}' > "$output"
+      status=200
+    else
+      printf '%s\n' '{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}' > "$output"
+      status=401
+    fi
+    ;;
   */api/v1/key)
     if authorized; then
       printf '%s\n' '{"data":{"label":"test-key","is_management_key":false}}' > "$output"

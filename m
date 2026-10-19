@@ -192,11 +192,14 @@ print_status() {
   printf '\n'
 }
 
-# Makes an HTTP request, adding bearer authentication when a token is given
-# without putting that token in curl's process arguments. Results are returned
-# through HTTP_STATUS and HTTP_DATA.
+# Makes an HTTP request, adding authentication when a token is given without
+# putting that token in curl's process arguments. The token goes out as a
+# bearer token unless auth_header names another header (Anthropic's
+# "x-api-key"); extra_headers holds further "Name: value" lines. Results are
+# returned through HTTP_STATUS and HTTP_DATA.
 http_request() {
   local method="$1" url="$2" token="$3" payload="${4:-}"
+  local auth_header="${5:-}" extra_headers="${6:-}"
   local prefix="${TMPDIR:-/tmp}/m-switcher-http"
   local header_file response_file payload_file=""
   local -a args
@@ -210,13 +213,18 @@ http_request() {
     M_TMP_FILES+=("$payload_file")
   fi
   {
-    [[ -n "$token" ]] && printf 'Authorization: Bearer %s\n' "$token" > "$header_file"
+    if [[ -n "$token" && -n "$auth_header" ]]; then
+      printf '%s: %s\n' "$auth_header" "$token" > "$header_file"
+    elif [[ -n "$token" ]]; then
+      printf 'Authorization: Bearer %s\n' "$token" > "$header_file"
+    fi
+    [[ -n "$extra_headers" ]] && printf '%s\n' "$extra_headers" >> "$header_file"
     [[ -n "$payload_file" ]] && printf '%s' "$payload" > "$payload_file"
     # -q must come first: it stops curl from reading ~/.curlrc, whose
     # verbose/trace options would print the Authorization header.
     args=(-q -sS --connect-timeout 10 --max-time 30 -o "$response_file" -w '%{http_code}'
           -X "$method")
-    [[ -n "$token" ]] && args+=(-H "@$header_file")
+    [[ -s "$header_file" ]] && args+=(-H "@$header_file")
     if [[ -n "$payload_file" ]]; then
       args+=(-H 'Content-Type: application/json' --data-binary "@$payload_file")
     fi
@@ -245,12 +253,19 @@ print_api_error() {
 
 # Sets KEY_VALIDATED=1 only when the provider has a validationUrl and the key
 # passed it; providers without one (Z.ai, Kimi) are saved unvalidated.
+# validationAuth {header, headers} adapts the request to APIs that do not take
+# a bearer token (Anthropic: x-api-key plus anthropic-version).
 validate_key() {
-  local name="$1" token="$2" url
+  local name="$1" token="$2" url auth_header extra_headers
   KEY_VALIDATED=0
   url="$(jq -r --arg n "$name" '.[$n].modelCatalog.validationUrl // ""' "$PROV")"
   [[ -z "$url" ]] && return 0
-  http_request GET "$url" "$token" || return 1
+  auth_header="$(jq -r --arg n "$name" '.[$n].modelCatalog.validationAuth.header // ""' "$PROV")"
+  extra_headers="$(jq -r --arg n "$name" '
+    .[$n].modelCatalog.validationAuth.headers // {}
+    | to_entries[] | "\(.key): \(.value)"
+  ' "$PROV")"
+  http_request GET "$url" "$token" "" "$auth_header" "$extra_headers" || return 1
   if ! http_succeeded; then
     print_api_error "API key validation failed"
     return 1

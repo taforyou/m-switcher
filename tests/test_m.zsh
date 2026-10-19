@@ -119,6 +119,24 @@ grep -q '(not validated' "$OUTPUT" || fail "unvalidated Kimi save was misreporte
 assert_jq '.zai.env.ANTHROPIC_AUTH_TOKEN == "zai-key" and .kimi.env.ANTHROPIC_API_KEY == "kimi-key"' "$PROVIDERS" \
   "plain provider keys were not saved"
 
+# Anthropic keys are validated with x-api-key + anthropic-version, never as a
+# bearer token; a rejected key is not saved.
+printf '%s\n' 'sk-bad' | expect_rc 3 key anthropic
+grep -q 'invalid x-api-key (HTTP 401)' "$OUTPUT" || fail "rejected Anthropic key did not report the API error: $(cat "$OUTPUT")"
+assert_jq '.anthropic.env.ANTHROPIC_API_KEY | startswith("<")' "$PROVIDERS" \
+  "rejected Anthropic key was saved"
+printf '%s\n' 'sk-ant-test' | run key anthropic
+grep -q '^saved and validated API key for Anthropic API (Console key)' "$OUTPUT" \
+  || fail "Anthropic key save message wrong: $(cat "$OUTPUT")"
+assert_jq '.anthropic.env.ANTHROPIC_API_KEY == "sk-ant-test"
+           and (.anthropic.env | has("ANTHROPIC_AUTH_TOKEN") | not)' "$PROVIDERS" \
+  "Anthropic key was not saved to ANTHROPIC_API_KEY"
+grep -q '^x-api-key: sk-ant-test$' "$M_TEST_LOG.headers" \
+  || fail "Anthropic validation did not send x-api-key through the header file"
+grep -q '^anthropic-version: 2023-06-01$' "$M_TEST_LOG.headers" \
+  || fail "Anthropic validation did not send anthropic-version"
+if grep -q 'Bearer sk-ant-test' "$M_TEST_LOG.headers"; then fail "Anthropic key was sent as a bearer token"; fi
+
 # --- catalog listings -------------------------------------------------------
 # Prefix search should put Q-prefixed models in the result and exclude models
 # that do not match the prefix/substring.
@@ -433,6 +451,43 @@ assert_jq '.env.ANTHROPIC_MODEL == "glm-4.7"
 [[ ! -e "$M_TEST_LOG" && ! -e "$M_TEST_LOG.requests" && ! -e "$M_TEST_LOG.headers" ]] \
   || fail "static catalog provider made a network request"
 
+# --- static catalog provider (Anthropic API) ---------------------------------
+# Claude models are served offline from the bundled list and routed by their
+# real IDs: Claude Code knows them, so no [1m] suffix, no recognition override
+# and no context variables are written.
+rm -f "$M_TEST_LOG.requests"
+run models anthropic
+[[ "$(grep -c '^claude-' "$OUTPUT")" == 4 ]] || fail "Anthropic catalog listed unexpected models: $(cat "$OUTPUT")"
+grep -q '^claude-opus-5-5 ' "$OUTPUT" || fail "Anthropic catalog did not list Opus 5.5"
+expect_rc 2 anthropic claude-sonnet-5-5 some/endpoint
+grep -q 'does not support endpoint selection' "$OUTPUT" || fail "Anthropic accepted an endpoint argument"
+run anthropic claude-sonnet-5-5
+for role in $(jq -r '.anthropic.modelCatalog.modelEnv[]' "$PROVIDERS"); do
+  jq -e --arg k "$role" '.env[$k] == "claude-sonnet-5-5"' "$SETTINGS" >/dev/null \
+    || fail "Anthropic model role $role does not use the selected model"
+done
+assert_jq '.env.ANTHROPIC_BASE_URL == "https://api.anthropic.com"
+           and .env.ANTHROPIC_API_KEY == "sk-ant-test"
+           and .env.CLAUDE_CODE_SUBAGENT_MODEL_FORCE == "1"
+           and .env.M_SWITCHER_MODEL == "claude-sonnet-5-5"
+           and (.env | has("ANTHROPIC_AUTH_TOKEN") | not)
+           and (.env | has("CLAUDE_CODE_MAX_CONTEXT_TOKENS") | not)
+           and (.env | has("CLAUDE_CODE_AUTO_COMPACT_WINDOW") | not)
+           and (.env | has("M_SWITCHER_MODEL_OVERRIDE_KEY") | not)
+           and (.modelOverrides | has("claude-sonnet-4-6") | not)' "$SETTINGS" \
+  "Anthropic model switch wrote the wrong env block"
+assert_jq '.env.KEEP_ME == "yes" and .permissions.allow == ["Read"]
+           and .modelOverrides["claude-opus-4-6"] == "user/opus-route"' "$SETTINGS" \
+  "Anthropic model switch changed unrelated settings"
+run status
+grep -q '^active: Anthropic API (Console key) — model: claude-sonnet-5-5$' "$OUTPUT" \
+  || fail "status did not report the Anthropic route: $(cat "$OUTPUT")"
+[[ ! -e "$M_TEST_LOG.requests" ]] || fail "Anthropic static catalog made a network request"
+run claude
+assert_jq '.env == {"KEEP_ME":"yes"} and .permissions.allow == ["Read"]
+           and .modelOverrides == {"claude-opus-4-6":"user/opus-route"}' "$SETTINGS" \
+  "Anthropic round trip left provider keys or removed user settings"
+
 # Without a model in a non-interactive shell, m installs the provider's static
 # env block (its ~anthropic/... defaults) and clears dynamic selection keys.
 run openrouter
@@ -606,7 +661,7 @@ assert_private "$home3/dotfiles/providers.json" "symlink target was not made pri
 # --- secrets never reach argv; auth always reaches the API ------------------
 grep -q '^Authorization: Bearer sk-or-test$' "$M_TEST_LOG.headers" \
   || fail "OpenRouter requests were not authenticated through the header file"
-for secret in sk-or-test sk-bad zai-key kimi-key; do
+for secret in sk-or-test sk-ant-test sk-bad zai-key kimi-key; do
   if grep -q -- "$secret" "$ARGV_LOG"; then fail "secret '$secret' appeared in a jq/curl argv"; fi
 done
 

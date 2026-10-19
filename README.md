@@ -88,6 +88,8 @@ m endpoints openrouter z-ai/glm-5.2
 
 m zai                          # Z.ai model picker (static GLM catalog)
 m zai glm-5.3-flash            # switch Z.ai directly to a specific model
+m anthropic                    # Claude models on your own Console API key
+m anthropic claude-sonnet-5-5  # switch the API route directly to one model
 m kimi
 m claude                       # return to Anthropic and remove provider env
 m status                       # active provider, model, and endpoint
@@ -227,6 +229,22 @@ The bundled non-OpenRouter examples are:
   offered. Prices are Z.ai's published per-million rates and change only
   when the bundled file does, so the Discounted picker scope reports
   itself unconfigured for Z.ai.
+- **Anthropic API (Console key)** — `https://api.anthropic.com`, using a
+  [Claude Console](https://platform.claude.com/) API key stored in
+  `ANTHROPIC_API_KEY` (set it with `m key anthropic`; the key is checked
+  against `/v1/models` with `x-api-key` and `anthropic-version`, since the API
+  does not accept API keys as bearer tokens). `m anthropic` opens a picker over
+  a static list of Claude Opus 5.5, Sonnet 5.5, Haiku 5.5 and Fable 5.1, and
+  the selected ID goes into every model role, with subagents forced onto it.
+  Claude Code knows these IDs, so `m` writes no `[1m]` suffix, no
+  `modelOverrides` entry, and no context variables. Usage is billed per token
+  to the key's Console organization instead of your Claude subscription;
+  `m claude` removes the key and goes back to the subscription login. The
+  monthly [API credits included with Max and Team plans](https://platform.claude.com/docs/en/about-claude/api-credits-for-subscribers)
+  **do not cover Claude Code**, so this route spends purchased Console credits.
+  An org holding only the included credits gets "Credit balance too low".
+  The first `claude` launch after switching may ask you to approve the
+  custom API key.
 - **Kimi Code** — the subscription service at
   `https://api.kimi.com/coding/`, authenticated with a key from the
   [Kimi Code Console](https://www.kimi.com/code/console). It is distinct from
@@ -251,7 +269,8 @@ The bundled non-OpenRouter examples are:
   mode `600`; `./install.sh` also tightens backups left by earlier versions.
   Symlinked config files are written through, not replaced.
 - **Key validation.** `m key openrouter` hides input and validates it through
-  OpenRouter's `/api/v1/key` endpoint before saving; the key never appears on
+  OpenRouter's `/api/v1/key` endpoint before saving (`m key anthropic` does
+  the same against Anthropic's `/v1/models`); the key never appears on
   a command line (`curl` reads it from a private header file, `jq` from the
   environment). Providers without a `validationUrl` (Z.ai, Kimi) are saved and
   reported as *not validated*. Keys remain stored locally in
